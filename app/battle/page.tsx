@@ -7,6 +7,9 @@ const TILE = 64;
 const GRID_W = 18;
 const GRID_H = 9;
 
+const INITIAL_GOLD = 100;
+const INITIAL_LIVES = 20;
+
 const TERRAIN_FRAMES = {
   grass: 'Grass Path',
   snow: 'Snow Path',
@@ -34,6 +37,12 @@ const FAMILY: Record<'frost'|'fire'|'electric'|'nature'|'mystic', TowerCfg> = {
   mystic:   { proj: 'Magic Missile',  fx: 'Electric Discharge',  range: 185, cooldown: 750, dmg: 20, projSpeed: 340 },
 };
 
+// Coste por familia
+const COST: Record<keyof typeof FAMILY, number> = {
+  frost: 35, fire: 40, electric: 45, nature: 30, mystic: 40
+};
+
+// Mapa frame → familia
 const TOWER_FAMILY: Record<string, keyof typeof FAMILY> = {
   'Ice Shard I': 'frost', 'Frost Cannon III': 'frost', 'Absolute Zero V': 'frost',
   'Flame Turret I': 'fire', 'Inferno Core III': 'fire', 'Phoenix Gate V': 'fire',
@@ -81,13 +90,20 @@ function BattleClient() {
       if (!hostRef.current || destroyed || gameRef.current) return;
 
       type Enemy = { s: any; hp: number; speed: number; alive: boolean };
-      type Tower = { s: any; cfg: TowerCfg; last: number };
+      type Tower = { s: any; cfg: TowerCfg; last: number; gx: number; gy: number };
       type Bullet = { s: any; vx: number; vy: number; speed: number; dmg: number; tgt: Enemy|null; life: number };
 
       class TD extends Phaser.Scene {
         enemies: Enemy[] = [];
         towers: Tower[] = [];
         bullets: Bullet[] = [];
+        grid: number[][] = [];
+        occupied = new Set<string>();
+        gold = INITIAL_GOLD;
+        lives = INITIAL_LIVES;
+        goldText: any;
+        livesText: any;
+        spawnEvt: any;
 
         preload() {
           this.load.atlas('terrain64','/assets/terrain_atlas.png','/assets/terrain_atlas.json');
@@ -100,13 +116,13 @@ function BattleClient() {
         }
 
         create() {
-          // Grid
+          // Grid visual
           const g = this.add.graphics(); g.lineStyle(1, 0x333333, 0.2);
           for (let x=0; x<GRID_W*TILE; x+=TILE) for (let y=0; y<GRID_H*TILE; y+=TILE) g.strokeRect(x,y,TILE,TILE);
 
-          // Camino demo
-          const grid = [ Array(GRID_W).fill(1), Array(GRID_W).fill(0), Array(GRID_W).fill(1) ];
-          if (this.textures.exists('terrain64')) renderPath(this, grid, 'grass');
+          // Camino (dos carriles: fila 0 y fila 2)
+          this.grid = [ Array(GRID_W).fill(1), Array(GRID_W).fill(0), Array(GRID_W).fill(1) ];
+          if (this.textures.exists('terrain64')) renderPath(this, this.grid, 'grass');
           else { const f = this.add.graphics(); f.fillStyle(0x444444,1); for (let x=0;x<GRID_W;x++){ f.fillRect(x*TILE,0,TILE,TILE); f.fillRect(x*TILE,2*TILE,TILE,TILE);} }
 
           // HUD
@@ -115,24 +131,43 @@ function BattleClient() {
           this.add.image(24, 88, 'ui32', 'icon_energy').setOrigin(0,0).setDepth(1000);
           this.add.image(24,120, 'ui32', 'icon_xp').setOrigin(0,0).setDepth(1000);
 
-          // Colocar torres (lee selectedRef.current)
+          this.goldText = this.add.text(56, 24, String(this.gold), { fontFamily: 'monospace', fontSize: '14px', color: '#ffd76a' }).setDepth(1000).setOrigin(0,0);
+          this.livesText = this.add.text(56, 88, String(this.lives), { fontFamily: 'monospace', fontSize: '14px', color: '#ff6a6a' }).setDepth(1000).setOrigin(0,0);
+
+          // Colocar torres (no permite sobre el camino ni sobre otra torre; cobra coste)
           this.input.on('pointerdown', (p: any) => {
             const gx = Math.floor(p.x / TILE), gy = Math.floor(p.y / TILE);
             if (gx<0||gx>=GRID_W||gy<0||gy>=GRID_H) return;
-            const x = gx*TILE + TILE/2, y = gy*TILE + TILE/2;
+            if (this.grid[gy]?.[gx] === 1) { this.flashText('No camino', p.x, p.y); return; }
+            const key = `${gx},${gy}`;
+            if (this.occupied.has(key)) { this.flashText('Ocupado', p.x, p.y); return; }
+
             const idx = selectedRef.current % TOWER_FRAMES.length;
             const frame = TOWER_FRAMES[idx];
             const fam = TOWER_FAMILY[frame];
             const cfg = FAMILY[fam];
+            const cost = COST[fam];
+
+            if (this.gold < cost) {
+              this.flashText('Sin oro', p.x, p.y, '#ff5050');
+              this.flashHUD(this.goldText, '#ff5050');
+              return;
+            }
+
+            this.gold -= cost; this.goldText.setText(String(this.gold));
+
+            const x = gx*TILE + TILE/2, y = gy*TILE + TILE/2;
             const spr = this.add.image(x, y, 'towers', frame).setDepth(y);
-            this.towers.push({ s: spr, cfg, last: 0 });
+            this.towers.push({ s: spr, cfg, last: 0, gx, gy });
+            this.occupied.add(key);
+
             const ring = this.add.circle(x, y, cfg.range, 0x00ffff, 0.05).setDepth(1);
             this.time.delayedCall(250, () => ring.destroy());
           });
 
-          // Spawns de enemigos
+          // Enemigos: carril superior
           const laneY = TILE/2;
-          this.time.addEvent({
+          this.spawnEvt = this.time.addEvent({
             delay: 800, loop: true, callback: () => {
               const eSpr = this.add.image(GRID_W*TILE + 24, laneY, 'enemies32', ENEMY_FRAME);
               eSpr.setDepth(eSpr.y);
@@ -140,6 +175,17 @@ function BattleClient() {
               this.enemies.push(enemy);
             }
           });
+        }
+
+        flashText(msg: string, x: number, y: number, color = '#ffd76a') {
+          const t = this.add.text(x, y - 14, msg, { fontFamily: 'monospace', fontSize: '12px', color }).setDepth(1200).setOrigin(0.5,1);
+          this.tweens.add({ targets: t, y: y - 34, alpha: 0, duration: 600, onComplete: () => t.destroy() });
+        }
+
+        flashHUD(txt: any, color: string) {
+          const orig = txt.style.color;
+          txt.setStyle({ color });
+          this.time.delayedCall(160, () => txt.setStyle({ color: orig }));
         }
 
         getTarget(x:number, y:number, range:number): Enemy | null {
@@ -169,7 +215,15 @@ function BattleClient() {
           if (target.hp <= 0 && target.alive) {
             target.alive = false;
             target.s.destroy();
+            // recompensa
+            this.gold += 5; this.goldText.setText(String(this.gold));
           }
+        }
+
+        gameOver() {
+          if (this.spawnEvt) this.spawnEvt.remove();
+          this.add.rectangle((GRID_W*TILE)/2, (GRID_H*TILE)/2, GRID_W*TILE, GRID_H*TILE, 0x000000, 0.5).setDepth(1500);
+          this.add.text((GRID_W*TILE)/2, (GRID_H*TILE)/2, 'GAME OVER', { fontFamily: 'monospace', fontSize: '28px', color: '#ff6a6a' }).setOrigin(0.5).setDepth(1600);
         }
 
         update(_t: number, dtMs: number) {
@@ -179,7 +233,11 @@ function BattleClient() {
           for (const e of this.enemies) {
             if (!e.alive) continue;
             e.s.x -= e.speed * dt;
-            if (e.s.x < -40) { e.alive = false; e.s.destroy(); }
+            if (e.s.x < -40) {
+              e.alive = false; e.s.destroy();
+              this.lives -= 1; this.livesText.setText(String(this.lives));
+              if (this.lives <= 0) this.gameOver();
+            }
           }
           this.enemies = this.enemies.filter(e => e.alive || e.s.active);
 
@@ -254,10 +312,15 @@ function BattleClient() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Texto arriba del canvas (muestra coste de la torre seleccionada)
+  const selName = TOWER_FRAMES[towerIdx];
+  const selFam = TOWER_FAMILY[selName];
+  const selCost = COST[selFam];
+
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
       <div style={{ color:'#bbb', fontSize:12 }}>
-        Torre actual: <b>{TOWER_FRAMES[towerIdx]}</b> — 1–5 familia, ← → variante
+        Torre: <b>{selName}</b> — Coste: <b>{selCost}</b> oro — 1–5 familia, ← → variante
       </div>
       <div ref={hostRef} />
     </div>
