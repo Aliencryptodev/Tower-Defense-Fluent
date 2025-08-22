@@ -44,7 +44,6 @@ function BattleClient() {
     let destroyed = false;
 
     (async () => {
-      // Cargar Phaser SOLO en cliente
       const mod = await import('phaser');
       Phaser = mod.default ?? mod;
 
@@ -55,6 +54,7 @@ function BattleClient() {
         placed: any[] = [];
         constructor(){ super('TD'); }
         preload() {
+          // Carga atlases (si el archivo no existe, Phaser seguirá, pero no habrá frames)
           this.load.atlas('terrain64','/assets/terrain_atlas.png','/assets/terrain_atlas.json');
           this.load.atlas('ui32','/assets/ui_atlas.png','/assets/ui_atlas.json');
           this.load.atlas('castles','/assets/castles_atlas.png','/assets/castles_atlas.json');
@@ -67,23 +67,38 @@ function BattleClient() {
           const g = this.add.graphics(); g.lineStyle(1, 0x333333, 0.2);
           for (let x=0; x<GRID_W*TILE; x+=TILE) for (let y=0; y<GRID_H*TILE; y+=TILE) g.strokeRect(x,y,TILE,TILE);
 
+          // Path simple 2 filas con hueco central
           const grid = [
             Array(GRID_W).fill(1),
             Array(GRID_W).fill(0),
             Array(GRID_W).fill(1),
           ];
-          renderPath(this, grid, 'grass');
 
+          // Si NO hay atlas de terreno, dibujamos fallback con rectángulos
+          if (this.textures.exists('terrain64')) {
+            renderPath(this, grid, 'grass');
+          } else {
+            const fallback = this.add.graphics();
+            fallback.fillStyle(0x444444, 1);
+            for (let x=0; x<GRID_W; x++) {
+              fallback.fillRect(x*TILE, 0, TILE, TILE); // fila 0
+              fallback.fillRect(x*TILE, 2*TILE, TILE, TILE); // fila 2
+            }
+          }
+
+          // HUD
           this.add.image(24, 24, 'ui32', 'icon_gold').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24, 56, 'ui32', 'icon_crystals').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24, 88, 'ui32', 'icon_energy').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24,120, 'ui32', 'icon_xp').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
 
-          registerAnimIfAny(this, { atlas:'towers', key:'frost_idle',   prefix:'frost_idle',   fallbackFrame:'frost_idle_1' });
-          registerAnimIfAny(this, { atlas:'towers', key:'frost_attack', prefix:'frost_attack', fallbackFrame:'frost_idle_1', fps:14, repeat:0 });
-          registerAnimIfAny(this, { atlas:'enemies32', key:'goblin_walk',  prefix:'goblin_walk',  fallbackFrame:'goblin_walk_1' });
-          registerAnimIfAny(this, { atlas:'enemies32', key:'goblin_death', prefix:'goblin_death', fallbackFrame:'goblin_walk_1', fps:14, repeat:0 });
+          // Animaciones (helper permisivo)
+          registerAnimIfAny(this as any, { atlas:'towers', key:'frost_idle',   prefix:'frost_idle',   fallbackFrame:'frost_idle_1' });
+          registerAnimIfAny(this as any, { atlas:'towers', key:'frost_attack', prefix:'frost_attack', fallbackFrame:'frost_idle_1', fps:14, repeat:0 });
+          registerAnimIfAny(this as any, { atlas:'enemies32', key:'goblin_walk',  prefix:'goblin_walk',  fallbackFrame:'goblin_walk_1' });
+          registerAnimIfAny(this as any, { atlas:'enemies32', key:'goblin_death', prefix:'goblin_death', fallbackFrame:'goblin_walk_1', fps:14, repeat:0 });
 
+          // Colocar torres con click
           this.input.on('pointerdown', (p: any) => {
             const gx = Math.floor(p.x / TILE), gy = Math.floor(p.y / TILE);
             if (gx<0||gx>=GRID_W||gy<0||gy>=GRID_H) return;
@@ -93,6 +108,7 @@ function BattleClient() {
             this.placed.push(t);
           });
 
+          // Spawnear “goblins” que cruzan la pantalla
           this.time.delayedCall(500, () => {
             const pathY = TILE/2;
             const startX = GRID_W*TILE + 40;
@@ -106,6 +122,7 @@ function BattleClient() {
             }
           });
 
+          // “Disparo” visual de las torres cada 1.5s
           this.time.addEvent({
             delay: 1500, loop: true,
             callback: () => {
@@ -143,5 +160,4 @@ function BattleClient() {
   );
 }
 
-// Exportar la página deshabilitando SSR para evitar "window is not defined"
 export default dynamic(() => Promise.resolve(BattleClient), { ssr: false });
