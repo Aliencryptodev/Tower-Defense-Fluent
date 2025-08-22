@@ -1,1 +1,9 @@
+{
+  "biome": "grass",
+  "gridW": 18,
+  "gridH": 9,
+  "lanes": [0, 2],
+  "hpMul": 1.0,
+  "speedMul": 1.0
+}
 
