@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { registerAnimIfAny } from '@/app/lib/anim';
 
 const TILE = 64;
 const GRID_W = 18;
@@ -14,6 +13,17 @@ const TERRAIN_FRAMES = {
   stone: 'Stone Path',
   lava: 'Lava Path',
 } as const;
+
+// Listas de frames que EXISTEN en tus atlases (igual al nombre del PNG sin .png)
+const TOWER_FRAMES = [
+  'Ice Shard I', 'Frost Cannon III', 'Absolute Zero V',           // Frost
+  'Flame Turret I', 'Inferno Core III', 'Phoenix Gate V',         // Fire
+  'Arc Coil I', 'Tesla Grid III', 'Storm Lord V',                 // Electric
+  'Thorn Vine I', 'Entangle Root III', 'World Tree V',            // Nature
+  'Mana Crystal I', 'Portal Anchor III', 'Reality Rift V'         // Mystic
+];
+
+const ENEMY_FRAME = 'Goblin Scout'; // usa enemigos_32
 
 function drawPathCell(scene: any, gx: number, gy: number, biome: keyof typeof TERRAIN_FRAMES, mask: number) {
   const cx = gx * TILE + TILE / 2, cy = gy * TILE + TILE / 2;
@@ -36,8 +46,9 @@ function renderPath(scene: any, grid: number[][], biome: keyof typeof TERRAIN_FR
 }
 
 function BattleClient() {
-  const ref = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<any>(null);
+  const [towerIdx, setTowerIdx] = useState(0);
 
   useEffect(() => {
     let Phaser: any;
@@ -47,15 +58,14 @@ function BattleClient() {
       const mod = await import('phaser');
       Phaser = mod.default ?? mod;
 
-      if (!ref.current || destroyed) return;
-      if (gameRef.current) return;
+      if (!hostRef.current || destroyed || gameRef.current) return;
 
       class TD extends Phaser.Scene {
         placed: any[] = [];
         constructor(){ super('TD'); }
+
         preload() {
-          // Carga atlases (si el archivo no existe, Phaser seguirá, pero no habrá frames)
-          this.load.atlas('terrain64','/assets/terrain_atlas.png','/assets/terrain_atlas.json');
+          this.load.atlas('terrain64','/assets/terrain_atlas.png','/assets/terrain_atlas.json'); // opcional
           this.load.atlas('ui32','/assets/ui_atlas.png','/assets/ui_atlas.json');
           this.load.atlas('castles','/assets/castles_atlas.png','/assets/castles_atlas.json');
           this.load.atlas('towers','/assets/towers_atlas.png','/assets/towers_atlas.json');
@@ -63,71 +73,46 @@ function BattleClient() {
           this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
           this.load.atlas('fx','/assets/effects_atlas.png','/assets/effects_atlas.json');
         }
+
         create() {
+          // Grid guía
           const g = this.add.graphics(); g.lineStyle(1, 0x333333, 0.2);
           for (let x=0; x<GRID_W*TILE; x+=TILE) for (let y=0; y<GRID_H*TILE; y+=TILE) g.strokeRect(x,y,TILE,TILE);
 
-          // Path simple 2 filas con hueco central
-          const grid = [
-            Array(GRID_W).fill(1),
-            Array(GRID_W).fill(0),
-            Array(GRID_W).fill(1),
-          ];
-
-          // Si NO hay atlas de terreno, dibujamos fallback con rectángulos
+          // Camino demo
+          const grid = [ Array(GRID_W).fill(1), Array(GRID_W).fill(0), Array(GRID_W).fill(1) ];
           if (this.textures.exists('terrain64')) {
             renderPath(this, grid, 'grass');
           } else {
-            const fallback = this.add.graphics();
-            fallback.fillStyle(0x444444, 1);
-            for (let x=0; x<GRID_W; x++) {
-              fallback.fillRect(x*TILE, 0, TILE, TILE); // fila 0
-              fallback.fillRect(x*TILE, 2*TILE, TILE, TILE); // fila 2
-            }
+            const fallback = this.add.graphics(); fallback.fillStyle(0x444444, 1);
+            for (let x=0; x<GRID_W; x++) { fallback.fillRect(x*TILE, 0, TILE, TILE); fallback.fillRect(x*TILE, 2*TILE, TILE, TILE); }
           }
 
-          // HUD
+          // HUD (iconos)
           this.add.image(24, 24, 'ui32', 'icon_gold').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24, 56, 'ui32', 'icon_crystals').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24, 88, 'ui32', 'icon_energy').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
           this.add.image(24,120, 'ui32', 'icon_xp').setScrollFactor(0).setDepth(1000).setOrigin(0,0);
 
-          // Animaciones (helper permisivo)
-          registerAnimIfAny(this as any, { atlas:'towers', key:'frost_idle',   prefix:'frost_idle',   fallbackFrame:'frost_idle_1' });
-          registerAnimIfAny(this as any, { atlas:'towers', key:'frost_attack', prefix:'frost_attack', fallbackFrame:'frost_idle_1', fps:14, repeat:0 });
-          registerAnimIfAny(this as any, { atlas:'enemies32', key:'goblin_walk',  prefix:'goblin_walk',  fallbackFrame:'goblin_walk_1' });
-          registerAnimIfAny(this as any, { atlas:'enemies32', key:'goblin_death', prefix:'goblin_death', fallbackFrame:'goblin_walk_1', fps:14, repeat:0 });
-
-          // Colocar torres con click
+          // Colocar torres: usa el frame estático que existe
           this.input.on('pointerdown', (p: any) => {
             const gx = Math.floor(p.x / TILE), gy = Math.floor(p.y / TILE);
             if (gx<0||gx>=GRID_W||gy<0||gy>=GRID_H) return;
             const x = gx*TILE + TILE/2, y = gy*TILE + TILE/2;
-            const t = this.add.sprite(x, y, 'towers');
-            t.play('frost_idle'); t.setDepth(y);
+            const frame = TOWER_FRAMES[towerIdx % TOWER_FRAMES.length];
+            const t = this.add.image(x, y, 'towers', frame);
+            t.setDepth(y);
             this.placed.push(t);
           });
 
-          // Spawnear “goblins” que cruzan la pantalla
+          // Spawnea enemigos estáticos que cruzan la pantalla
           this.time.delayedCall(500, () => {
-            const pathY = TILE/2;
+            const y = TILE/2;
             const startX = GRID_W*TILE + 40;
             for (let i=0; i<8; i++) {
-              const e = this.add.sprite(startX + i*50, pathY, 'enemies32');
-              e.play('goblin_walk'); e.setDepth(e.y);
-              this.tweens.add({
-                targets: e, x: -40, duration: 8000 + i*200,
-                onComplete: () => { e.play('goblin_death'); this.time.delayedCall(400, ()=> e.destroy()); }
-              });
-            }
-          });
-
-          // “Disparo” visual de las torres cada 1.5s
-          this.time.addEvent({
-            delay: 1500, loop: true,
-            callback: () => {
-              this.placed.forEach(t => t.play('frost_attack'));
-              this.time.delayedCall(300, () => this.placed.forEach(t => t.play('frost_idle')));
+              const e = this.add.image(startX + i*50, y, 'enemies32', ENEMY_FRAME);
+              e.setDepth(e.y);
+              this.tweens.add({ targets: e, x: -40, duration: 8000 + i*200, onComplete: () => e.destroy() });
             }
           });
         }
@@ -137,25 +122,41 @@ function BattleClient() {
         type: Phaser.AUTO,
         width: GRID_W * TILE,
         height: GRID_H * TILE,
-        parent: ref.current!,
+        parent: hostRef.current!,
         backgroundColor: '#0e0e0e',
         scene: [TD],
         render: { pixelArt: true, antialias: false }
       });
     })();
 
-    return () => {
-      destroyed = true;
-      if (gameRef.current) {
-        gameRef.current.destroy(true);
-        gameRef.current = null;
-      }
+    return () => { destroyed = true; gameRef.current?.destroy(true); gameRef.current = null; };
+  }, [towerIdx]);
+
+  // Cambiar torre con teclado (1–5 por familias)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const groups = [
+        [0,1,2],     // Frost
+        [3,4,5],     // Fire
+        [6,7,8],     // Electric
+        [9,10,11],   // Nature
+        [12,13,14],  // Mystic
+      ];
+      const idx = Number(e.key) - 1;
+      if (idx >= 0 && idx < groups.length) setTowerIdx(groups[idx][0]); // primer frame del grupo
+      if (e.key === 'ArrowLeft')  setTowerIdx(i => (i + TOWER_FRAMES.length - 1) % TOWER_FRAMES.length);
+      if (e.key === 'ArrowRight') setTowerIdx(i => (i + 1) % TOWER_FRAMES.length);
     };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   return (
-    <div style={{ width: '100%', height: '100%', display:'flex', justifyContent:'center' }}>
-      <div ref={ref} />
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
+      <div style={{ color:'#bbb', fontSize:12 }}>
+        Torre actual: <b>{TOWER_FRAMES[towerIdx]}</b> — cambia con 1–5, ← →
+      </div>
+      <div ref={hostRef} />
     </div>
   );
 }
