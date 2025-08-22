@@ -1,38 +1,59 @@
-'use client';
+// app/lib/anim.ts
 
-export function listExistingFrames(scene: Phaser.Scene, atlasKey: string, prefix: string, maxCheck = 32): string[] {
-  // @ts-ignore
-  const tex = scene.textures.get(atlasKey);
-  const frames: string[] = [];
-  for (let i = 1; i <= maxCheck; i++) {
-    const key = `${prefix}_${i}`;
-    // @ts-ignore
-    if (tex && tex.has && tex.has(key)) frames.push(key); else if (i === 1) return []; else break;
-  }
-  return frames;
-}
+export type AnimCfg = {
+  atlas: string;        // nombre del atlas cargado en Phaser (load.atlas key)
+  key: string;          // nombre de la anim en el anims manager
+  prefix: string;       // prefijo de frames (ej: 'goblin_walk' => goblin_walk_1,2,...)
+  fallbackFrame: string;// frame de respaldo si no hay secuencia
+  fps?: number;         // frameRate
+  repeat?: number;      // -1 loop, 0 no-loop
+};
 
-export function registerAnimIfAny(
-  scene: Phaser.Scene,
-  opts: { atlas: string; key: string; prefix: string; fps?: number; repeat?: number; fallbackFrame?: string }
-) {
-  const frames = listExistingFrames(scene, opts.atlas, opts.prefix);
-  if (frames.length > 0) {
-    scene.anims.create({
-      key: opts.key,
-      frames: frames.map((name) => ({ key: opts.atlas, frame: name })),
-      frameRate: opts.fps ?? 12,
-      repeat: opts.repeat ?? -1,
-    });
-    return true;
-  } else if (opts.fallbackFrame) {
-    scene.anims.create({
-      key: opts.key,
-      frames: [{ key: opts.atlas, frame: opts.fallbackFrame }],
-      frameRate: 1,
-      repeat: -1,
-    });
-    return true;
+/**
+ * Crea la animación si no existe. Busca frames que empiecen por `prefix`
+ * en el atlas, los ordena por sufijo numérico y crea la animación.
+ * Tipado laxo para evitar problemas de TS en SSR/dynamic import.
+ */
+export function registerAnimIfAny(scene: any, cfg: AnimCfg) {
+  if (!scene || !scene.anims) return;
+
+  const fps = cfg.fps ?? 10;
+  const repeat = cfg.repeat ?? -1;
+
+  if (scene.anims.exists(cfg.key)) return;
+
+  const tex = scene.textures?.get?.(cfg.atlas);
+  let frameNames: string[] = [];
+
+  // Detecta frames del atlas que empiezan por el prefijo
+  if (tex && tex.getFrameNames) {
+    try {
+      const names: string[] = tex.getFrameNames();
+      frameNames = names.filter(n => n.startsWith(cfg.prefix));
+      // Ordena por sufijo numérico si existe (p.ej. foo_1, foo_2, ...)
+      frameNames.sort((a, b) => {
+        const na = parseInt(a.replace(/^\D+/g, ''), 10) || 0;
+        const nb = parseInt(b.replace(/^\D+/g, ''), 10) || 0;
+        return na - nb;
+      });
+    } catch {}
   }
-  return false;
+
+  if (frameNames.length === 0) {
+    // Animación “fija” con un único frame
+    scene.anims.create({
+      key: cfg.key,
+      frames: [{ key: cfg.atlas, frame: cfg.fallbackFrame }],
+      frameRate: fps,
+      repeat
+    });
+    return;
+  }
+
+  scene.anims.create({
+    key: cfg.key,
+    frames: frameNames.map(f => ({ key: cfg.atlas, frame: f })),
+    frameRate: fps,
+    repeat
+  });
 }
