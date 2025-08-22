@@ -15,16 +15,18 @@ const FW   = parseInt(wStr, 10);
 const FH   = parseInt(hStr, 10);
 const COLS = parseInt(colsStr || '8', 10);
 
-// normaliza ruta de entrada (Windows/Linux) y quita barra final
 const inDir = inDirArg.replace(/\\/g, '/').replace(/\/+$/, '');
-
-// asegura carpetas de salida
 fs.mkdirSync(path.dirname(outPng), { recursive: true });
 fs.mkdirSync(path.dirname(outJson), { recursive: true });
 
 (async () => {
   const files = (await fg(`${inDir}/**/*.png`, { onlyFiles: true, caseSensitiveMatch: false })).sort();
-  if (!files.length) throw new Error(`no pngs in ${inDir}`);
+
+  // 🚦 Si no hay PNGs, no bloquear el build: avisar y salir con éxito
+  if (!files.length) {
+    console.warn(`⚠️  skip: ${inDir} (no pngs)`);
+    process.exit(0);
+  }
 
   const rows   = Math.ceil(files.length / COLS);
   const atlasW = COLS * FW;
