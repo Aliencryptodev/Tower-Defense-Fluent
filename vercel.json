@@ -1,0 +1,6 @@
+{
+  "buildCommand": "npm ci && npm run build:assets && npm run build",
+  "installCommand": "npm ci",
+  "framework": "nextjs",
+  "functions": { "nodejs": { "runtime": "nodejs20.x" } }
+}
