@@ -3,3 +3,4 @@
   "buildCommand": "npm run build:assets && npm run build",
   "framework": "nextjs"
 }
+
