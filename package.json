@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build:assets": "ts-node tools/pack-static-atlas.ts sprites/terrain_64 public/assets/terrain_atlas.png public/assets/terrain_atlas.json 64 64 8 && ts-node tools/pack-static-atlas.ts sprites/ui_32 public/assets/ui_atlas.png public/assets/ui_atlas.json 32 32 8 && ts-node tools/pack-static-atlas.ts sprites/towers_64 public/assets/towers_atlas.png public/assets/towers_atlas.json 64 64 10 && ts-node tools/pack-static-atlas.ts sprites/castles_128 public/assets/castles_atlas.png public/assets/castles_atlas.json 128 128 8 && ts-node tools/pack-static-atlas.ts sprites/enemies_32 public/assets/enemies32_atlas.png public/assets/enemies32_atlas.json 32 32 12 && ts-node tools/pack-static-atlas.ts sprites/enemies_40 public/assets/enemies40_atlas.png public/assets/enemies40_atlas.json 40 40 12 && ts-node tools/pack-static-atlas.ts sprites/enemies_48 public/assets/enemies48_atlas.png public/assets/enemies48_atlas.json 48 48 12 && ts-node tools/pack-static-atlas.ts sprites/enemies_64 public/assets/enemies64_atlas.png public/assets/enemies64_atlas.json 64 64 12 && ts-node tools/pack-static-atlas.ts sprites/projectiles_16 public/assets/projectiles_atlas.png public/assets/projectiles_atlas.json 16 16 12 && ts-node tools/pack-static-atlas.ts sprites/effect_24 public/assets/effects_atlas.png public/assets/effects_atlas.json 24 24 12",
+    "build:assets": "node tools/pack-static-atlas.mjs sprites/terrain_64 public/assets/terrain_atlas.png public/assets/terrain_atlas.json 64 64 8 && node tools/pack-static-atlas.mjs sprites/ui_32 public/assets/ui_atlas.png public/assets/ui_atlas.json 32 32 8 && node tools/pack-static-atlas.mjs sprites/towers_64 public/assets/towers_atlas.png public/assets/towers_atlas.json 64 64 10 && node tools/pack-static-atlas.mjs sprites/castles_128 public/assets/castles_atlas.png public/assets/castles_atlas.json 128 128 8 && node tools/pack-static-atlas.mjs sprites/enemies_32 public/assets/enemies32_atlas.png public/assets/enemies32_atlas.json 32 32 12 && node tools/pack-static-atlas.mjs sprites/enemies_40 public/assets/enemies40_atlas.png public/assets/enemies40_atlas.json 40 40 12 && node tools/pack-static-atlas.mjs sprites/enemies_48 public/assets/enemies48_atlas.png public/assets/enemies48_atlas.json 48 48 12 && node tools/pack-static-atlas.mjs sprites/enemies_64 public/assets/enemies64_atlas.png public/assets/enemies64_atlas.json 64 64 12 && node tools/pack-static-atlas.mjs sprites/projectiles_16 public/assets/projectiles_atlas.png public/assets/projectiles_atlas.json 16 16 12 && node tools/pack-static-atlas.mjs sprites/effect_24 public/assets/effects_atlas.png public/assets/effects_atlas.json 24 24 12",
     "build": "next build",
     "start": "next start -p 3000",
     "dev": "next dev -p 3000"
@@ -17,7 +17,7 @@
   "devDependencies": {
     "fast-glob": "^3.3.2",
     "sharp": "^0.33.3",
-    "ts-node": "^10.9.2",
     "typescript": "^5.5.4"
   }
 }
+
