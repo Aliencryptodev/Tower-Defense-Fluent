@@ -15,14 +15,17 @@ const FW   = parseInt(wStr, 10);
 const FH   = parseInt(hStr, 10);
 const COLS = parseInt(colsStr || '8', 10);
 
+// normaliza ruta de entrada y quita barra final
 const inDir = inDirArg.replace(/\\/g, '/').replace(/\/+$/, '');
+
+// asegura carpetas de salida
 fs.mkdirSync(path.dirname(outPng), { recursive: true });
 fs.mkdirSync(path.dirname(outJson), { recursive: true });
 
 (async () => {
   const files = (await fg(`${inDir}/**/*.png`, { onlyFiles: true, caseSensitiveMatch: false })).sort();
 
-  // 🚦 Si no hay PNGs, no bloquear el build: avisar y salir con éxito
+  // Si no hay PNGs en esa carpeta → no bloquear el build
   if (!files.length) {
     console.warn(`⚠️  skip: ${inDir} (no pngs)`);
     process.exit(0);
@@ -34,6 +37,7 @@ fs.mkdirSync(path.dirname(outJson), { recursive: true });
 
   const composites = [];
   const frames = {};
+  let resized = 0;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -42,7 +46,22 @@ fs.mkdirSync(path.dirname(outJson), { recursive: true });
     const left = col * FW;
     const top  = row * FH;
 
-    composites.push({ input: file, left, top });
+    const meta = await sharp(file).metadata();
+    let inputBuffer;
+
+    if (meta.width !== FW || meta.height !== FH) {
+      console.warn(`⚠️  ${file}: ${meta.width}x${meta.height} → ${FW}x${FH}`);
+      // Reescala manteniendo pixel-art (nearest) y relleno transparente si sobra
+      inputBuffer = await sharp(file)
+        .resize(FW, FH, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: sharp.kernel.nearest })
+        .png()
+        .toBuffer();
+      resized++;
+    } else {
+      inputBuffer = await sharp(file).png().toBuffer();
+    }
+
+    composites.push({ input: inputBuffer, left, top });
 
     const name = path.basename(file).replace(/\.png$/i, '');
     frames[name] = {
@@ -78,5 +97,5 @@ fs.mkdirSync(path.dirname(outJson), { recursive: true });
   };
 
   fs.writeFileSync(outJson, JSON.stringify(json, null, 2));
-  console.log(`✅ atlas: ${outPng}  json: ${outJson}  frames: ${Object.keys(frames).length}`);
+  console.log(`✅ atlas: ${outPng}  json: ${outJson}  frames: ${Object.keys(frames).length}  (resized: ${resized})`);
 })().catch(e => { console.error(e); process.exit(1); });
