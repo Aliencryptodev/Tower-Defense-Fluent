@@ -26,7 +26,7 @@ const TOWER_FRAMES = [
   'Mana Crystal I', 'Portal Anchor III', 'Reality Rift V'         // Mystic
 ] as const;
 
-const ENEMY_FRAME = 'Goblin Scout';
+const ENEMIES32 = ['Goblin Scout','Orc Warrior','Skeleton Archer','Wolf Rider'] as const;
 
 type TowerCfg = { proj: string; fx: string; range: number; cooldown: number; dmg: number; projSpeed: number };
 const FAMILY: Record<'frost'|'fire'|'electric'|'nature'|'mystic', TowerCfg> = {
@@ -70,6 +70,16 @@ function renderPath(scene: any, grid: number[][], biome: keyof typeof TERRAIN_FR
   }
 }
 
+// ---- WAVE CONFIG ----
+type Wave = { name: string; count: number; gapMs: number; enemy: typeof ENEMIES32[number]; hp: number; speed: number; lanes: number[] };
+const WAVES: Wave[] = [
+  { name: 'Goblins',        count: 12, gapMs: 700, enemy: 'Goblin Scout',    hp: 50,  speed: 60, lanes: [0] },
+  { name: 'Orc Patrol',     count: 10, gapMs: 800, enemy: 'Orc Warrior',     hp: 80,  speed: 58, lanes: [2] },
+  { name: 'Skels & Wolves', count: 16, gapMs: 600, enemy: 'Skeleton Archer', hp: 65,  speed: 62, lanes: [0,2] },
+  { name: 'Wolf Riders',    count: 16, gapMs: 550, enemy: 'Wolf Rider',      hp: 75,  speed: 80, lanes: [0,2] },
+  { name: 'Mixed Rush',     count: 24, gapMs: 500, enemy: 'Goblin Scout',    hp: 95,  speed: 72, lanes: [0,2] },
+];
+
 function BattleClient() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<any>(null);
@@ -99,11 +109,23 @@ function BattleClient() {
         bullets: Bullet[] = [];
         grid: number[][] = [];
         occupied = new Set<string>();
+
         gold = INITIAL_GOLD;
         lives = INITIAL_LIVES;
         goldText: any;
         livesText: any;
-        spawnEvt: any;
+
+        // waves
+        waveIndex = 0;
+        waveText: any;
+        hintText: any;
+        waveActive = false;
+        spawnsDone = false;
+        spawnCount = 0;
+
+        // control de tiempo
+        paused = false;
+        timeScale = 1;
 
         preload() {
           this.load.atlas('terrain64','/assets/terrain_atlas.png','/assets/terrain_atlas.json');
@@ -134,8 +156,15 @@ function BattleClient() {
           this.goldText = this.add.text(56, 24, String(this.gold), { fontFamily: 'monospace', fontSize: '14px', color: '#ffd76a' }).setDepth(1000).setOrigin(0,0);
           this.livesText = this.add.text(56, 88, String(this.lives), { fontFamily: 'monospace', fontSize: '14px', color: '#ff6a6a' }).setDepth(1000).setOrigin(0,0);
 
-          // Colocar torres (no permite sobre el camino ni sobre otra torre; cobra coste)
+          this.waveText = this.add.text(GRID_W*TILE - 16, 16, `Wave 0/${WAVES.length}`, { fontFamily: 'monospace', fontSize: '14px', color: '#cfe4ff' }).setDepth(1000).setOrigin(1,0);
+          this.hintText = this.add.text(GRID_W*TILE/2, GRID_H*TILE - 8,
+            'N: siguiente ola · Espacio: pausa · F: 2× velocidad · 1–5/←→: torre',
+            { fontFamily: 'monospace', fontSize: '12px', color: '#9aa' }
+          ).setDepth(1000).setOrigin(0.5,1);
+
+          // Colocar torres (no sobre camino ni ocupadas; cobra coste)
           this.input.on('pointerdown', (p: any) => {
+            if (this.paused) return;
             const gx = Math.floor(p.x / TILE), gy = Math.floor(p.y / TILE);
             if (gx<0||gx>=GRID_W||gy<0||gy>=GRID_H) return;
             if (this.grid[gy]?.[gx] === 1) { this.flashText('No camino', p.x, p.y); return; }
@@ -165,29 +194,72 @@ function BattleClient() {
             this.time.delayedCall(250, () => ring.destroy());
           });
 
-          // Enemigos: carril superior
-          const laneY = TILE/2;
-          this.spawnEvt = this.time.addEvent({
-            delay: 800, loop: true, callback: () => {
-              const eSpr = this.add.image(GRID_W*TILE + 24, laneY, 'enemies32', ENEMY_FRAME);
-              eSpr.setDepth(eSpr.y);
-              const enemy: Enemy = { s: eSpr, hp: 60, speed: 60, alive: true };
-              this.enemies.push(enemy);
+          // Controles globales
+          this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
+            if (e.key === ' ' || e.key === 'Spacebar') { // pausa
+              this.togglePause();
+            } else if (e.key === 'f' || e.key === 'F') {
+              this.toggleSpeed();
+            } else if (e.key === 'n' || e.key === 'N') {
+              this.startNextWave();
             }
           });
+
+          // Empezamos mostrando “pulsa N”
+          this.flashCenter(`Pulsa N para empezar`, '#cfe4ff');
         }
 
+        // --- util UI ---
         flashText(msg: string, x: number, y: number, color = '#ffd76a') {
           const t = this.add.text(x, y - 14, msg, { fontFamily: 'monospace', fontSize: '12px', color }).setDepth(1200).setOrigin(0.5,1);
           this.tweens.add({ targets: t, y: y - 34, alpha: 0, duration: 600, onComplete: () => t.destroy() });
         }
-
         flashHUD(txt: any, color: string) {
           const orig = txt.style.color;
           txt.setStyle({ color });
           this.time.delayedCall(160, () => txt.setStyle({ color: orig }));
         }
+        flashCenter(msg: string, color = '#ffd76a') {
+          const bx = this.add.rectangle(GRID_W*TILE/2, GRID_H*TILE/2, 320, 48, 0x000000, 0.5).setDepth(1400);
+          const t = this.add.text(GRID_W*TILE/2, GRID_H*TILE/2, msg, { fontFamily: 'monospace', fontSize: '16px', color }).setOrigin(0.5).setDepth(1500);
+          this.time.delayedCall(1100, () => { bx.destroy(); t.destroy(); });
+        }
 
+        // --- pause/speed ---
+        applyTimeScale() { this.time.timeScale = this.paused ? 0 : this.timeScale; }
+        togglePause() { this.paused = !this.paused; this.applyTimeScale(); this.flashCenter(this.paused ? 'PAUSA' : 'REANUDAR', '#cfe4ff'); }
+        toggleSpeed() { this.timeScale = (this.timeScale === 1 ? 2 : 1); this.applyTimeScale(); this.flashCenter(`${this.timeScale}× velocidad`, '#cfe4ff'); }
+
+        // --- waves ---
+        startNextWave() {
+          if (this.paused) return;
+          if (this.waveActive) return;
+          if (this.waveIndex >= WAVES.length) { this.flashCenter('Todas las oleadas completadas 🎉', '#8eff8e'); return; }
+
+          const w = WAVES[this.waveIndex];
+          this.waveActive = true;
+          this.spawnsDone = false;
+          this.spawnCount = 0;
+          this.waveText.setText(`Wave ${this.waveIndex+1}/${WAVES.length}: ${w.name}`);
+
+          // Programar spawns
+          for (let i = 0; i < w.count; i++) {
+            const lane = w.lanes[i % w.lanes.length];
+            const y = lane * TILE + TILE/2; // 0→32, 2→160
+            this.time.delayedCall(i * w.gapMs, () => {
+              const eSpr = this.add.image(GRID_W*TILE + 24, y, 'enemies32', w.enemy);
+              eSpr.setDepth(eSpr.y);
+              const enemy: Enemy = { s: eSpr, hp: w.hp, speed: w.speed, alive: true };
+              this.enemies.push(enemy);
+              this.spawnCount++;
+              if (this.spawnCount === w.count) {
+                this.spawnsDone = true;
+              }
+            });
+          }
+        }
+
+        // --- combate ---
         getTarget(x:number, y:number, range:number): Enemy | null {
           let best: Enemy | null = null, bestD = Infinity;
           for (const e of this.enemies) {
@@ -198,7 +270,6 @@ function BattleClient() {
           }
           return best;
         }
-
         shoot(from: {x:number,y:number}, cfg: TowerCfg, target: Enemy) {
           const b = this.add.image(from.x, from.y, 'projectiles', cfg.proj).setDepth(500);
           const dx = target.s.x - from.x, dy = target.s.y - from.y;
@@ -207,7 +278,6 @@ function BattleClient() {
           const vy = (dy/len) * cfg.projSpeed;
           this.bullets.push({ s: b, vx, vy, speed: cfg.projSpeed, dmg: cfg.dmg, tgt: target, life: 2000 });
         }
-
         hit(target: Enemy, x:number, y:number, fxFrame: string, dmg:number) {
           target.hp -= dmg;
           const fx = this.add.image(x, y, 'fx', fxFrame).setDepth(900);
@@ -219,14 +289,14 @@ function BattleClient() {
             this.gold += 5; this.goldText.setText(String(this.gold));
           }
         }
-
         gameOver() {
-          if (this.spawnEvt) this.spawnEvt.remove();
+          this.paused = true; this.applyTimeScale();
           this.add.rectangle((GRID_W*TILE)/2, (GRID_H*TILE)/2, GRID_W*TILE, GRID_H*TILE, 0x000000, 0.5).setDepth(1500);
           this.add.text((GRID_W*TILE)/2, (GRID_H*TILE)/2, 'GAME OVER', { fontFamily: 'monospace', fontSize: '28px', color: '#ff6a6a' }).setOrigin(0.5).setDepth(1600);
         }
 
         update(_t: number, dtMs: number) {
+          if (this.paused) return;
           const dt = dtMs / 1000;
 
           // mover enemigos
@@ -271,6 +341,19 @@ function BattleClient() {
             }
             return true;
           });
+
+          // fin de ola
+          if (this.waveActive && this.spawnsDone && this.enemies.length === 0) {
+            this.waveActive = false;
+            this.waveIndex++;
+            if (this.waveIndex < WAVES.length) {
+              this.flashCenter(`Oleada ${this.waveIndex} completada · Pulsa N`, '#8eff8e');
+              this.waveText.setText(`Wave ${this.waveIndex}/${WAVES.length}`);
+            } else {
+              this.flashCenter('¡Victoria! Todas las oleadas superadas 🎉', '#8eff8e');
+              this.waveText.setText(`Wave ${WAVES.length}/${WAVES.length}`);
+            }
+          }
         }
       }
 
@@ -288,7 +371,7 @@ function BattleClient() {
     return () => { destroyed = true; gameRef.current?.destroy(true); gameRef.current = null; };
   }, []); // no re-inicializa Phaser
 
-  // Teclado: 1–5 cambia familia, ←/→ rota variante (sin funciones en el setter)
+  // Teclado: 1–5 cambia familia, ←/→ rota variante
   useEffect(() => {
     const groups = [[0,1,2],[3,4,5],[6,7,8],[9,10,11],[12,13,14]];
 
@@ -320,7 +403,7 @@ function BattleClient() {
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
       <div style={{ color:'#bbb', fontSize:12 }}>
-        Torre: <b>{selName}</b> — Coste: <b>{selCost}</b> oro — 1–5 familia, ← → variante
+        Torre: <b>{selName}</b> — Coste: <b>{selCost}</b> oro — 1–5 familia, ← → variante · N: wave · Espacio: pausa · F: 2×
       </div>
       <div ref={hostRef} />
     </div>
