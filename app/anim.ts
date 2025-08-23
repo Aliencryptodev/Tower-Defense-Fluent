@@ -14,6 +14,8 @@ export function listExistingFrames(
     const out: string[] = [];
     for (let i = 1; i <= maxCheck; i++) {
       const name = `${prefix}_${i}`;
+
+      // Compatibilidad según versión de Phaser
       const has = typeof tex.hasFrame === 'function'
         ? tex.hasFrame(name)
         : typeof tex.getFrame === 'function'
@@ -40,7 +42,7 @@ type RegOpts = {
 
 /**
  * Crea la animación si existen frames con el prefijo dado.
- * Si no hay frames, registra una anim de 1 frame (fallback) para que play() no falle.
+ * Si no hay frames, registra una animación de 1 frame (fallback) para que play() no falle.
  */
 export function registerAnimIfAny(
   scene: any,
