@@ -136,6 +136,22 @@ function createTD(Phaser: any) {
       this.tooltip = this.add.text(0, 0, '', { fontFamily: 'monospace', fontSize: '12px', color: '#e7f', backgroundColor: 'rgba(0,0,0,0.45)' })
         .setDepth(1100).setVisible(false);
 
+      type MapPoint = { x:number; y:number }; 
+      type MapRect = { x:number; y:number; w:number; h:number };
+      type MapDef = {
+      name:string; tileSize:number; width:number; height:number;
+      terrain:string; buildMask: MapRect[]; paths: MapPoint[][];
+      waves: { baseCount:number; countPerWave:number; baseHP:number; hpPerWave:number;
+           baseSpeed:number; speedPerWave:number; spawnDelayMs:number; rewardBase:number };
+      };
+
+      async function loadMapDef(name:string): Promise<MapDef> {
+      const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
+      if (!res.ok) throw new Error(`map ${name} not found`);
+      return res.json();
+      }
+
+      
       this.input.on('pointerdown', (p: any) => {
         const gx = Math.floor(p.worldX / TILE) * TILE + TILE / 2;
         const gy = Math.floor(p.worldY / TILE) * TILE + TILE / 2;
