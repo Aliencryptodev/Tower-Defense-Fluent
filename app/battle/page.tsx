@@ -1,15 +1,21 @@
 'use client';
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-import React, { useEffect, useRef, useState } from 'react';
-import * as Phaser from 'phaser';
+// Importar Phaser SOLO en el navegador (evita "window is not defined" en Vercel)
+let PhaserLib: any = null;
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  PhaserLib = require('phaser');
+}
 
+// ======== Tipos mínimos del mapa (no dependen de Phaser) ========
 type MapPoint = { x:number; y:number };
 type MapRect  = { x:number; y:number; w:number; h:number };
 type MapDef = {
   name:string;
   tileSize:number; width:number; height:number;
-  terrain:string; // frame name en terrain_atlas
+  terrain:string;
   buildMask: MapRect[];
   paths: MapPoint[][];
   waves: {
@@ -23,18 +29,19 @@ type MapDef = {
 type FamKey = 'electric'|'fire'|'frost';
 
 type TowerModel = {
-  frame:string;           // frame en atlas "towers"
-  fam: FamKey;            // familia
+  frame:string;
+  fam: FamKey;
   cost:number;
   dmg:number;
-  range:number;           // px
-  cd:number;              // ms
+  range:number;
+  cd:number;
   projectile:'Lightning Bolt'|'Fireball'|'Ice Shard';
-  chain?: { hops:number; falloff:number }; // solo electric
-  slow?:  { factor:number; ms:number };    // solo frost
-  dot?:   { dps:number; ms:number };       // solo fire
+  chain?: { hops:number; falloff:number };
+  slow?:  { factor:number; ms:number };
+  dot?:   { dps:number; ms:number };
 };
 
+// ======== Modelos de torres ========
 const ELECTRIC: TowerModel[] = [
   { frame:'Arc Coil I',     fam:'electric', cost:45, dmg:18, range:190, cd:700, projectile:'Lightning Bolt', chain:{hops:2,falloff:0.7} },
   { frame:'Tesla Grid III', fam:'electric', cost:85, dmg:30, range:210, cd:620, projectile:'Lightning Bolt', chain:{hops:3,falloff:0.7} },
@@ -57,365 +64,329 @@ const GROUPS: Record<FamKey,TowerModel[]> = {
   frost: FROST,
 };
 
-// ---------- util de fetch de mapa ----------
+// util: carga JSON de mapa
 async function loadMapDef(name:string): Promise<MapDef> {
   const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
   if (!res.ok) throw new Error(`map ${name} not found`);
   return res.json();
 }
 
-class TD extends Phaser.Scene {
-  map!: MapDef;
-  gold = 320;
-  waveIndex = 0;
-  laneToggle = 0;
+// ========= Escena (se define usando PhaserLib dentro del runtime del navegador) =========
+function createSceneClass() {
+  const Phaser = PhaserLib;
 
-  // phaser groups
-  enemies!: Phaser.GameObjects.Group;
-  projectiles!: Phaser.GameObjects.Group;
-  towers: { sprite:Phaser.GameObjects.Image; model:TowerModel; last:number }[] = [];
+  return class TD extends Phaser.Scene {
+    map!: MapDef;
+    gold = 320;
+    waveIndex = 0;
+    laneToggle = 0;
 
-  // ui
-  goldText!: Phaser.GameObjects.Text;
-  infoText!: Phaser.GameObjects.Text;
-  tooltip!: Phaser.GameObjects.Text;
-  rangeCircle!: Phaser.GameObjects.Arc;
+    enemies!: any;
+    projectiles!: any;
+    towers: { sprite:any; model:TowerModel; last:number }[] = [];
 
-  // build control
-  selFam: FamKey = 'electric';
-  selIdx = 0;
-  blockedTiles = new Set<string>(); // (x,y) de path para impedir colocar
+    goldText!: any;
+    infoText!: any;
+    tooltip!: any;
+    rangeCircle!: any;
 
-  // helpers
-  worldToTile(x:number,y:number){ return { tx:Math.floor(x/this.map.tileSize), ty:Math.floor(y/this.map.tileSize) }; }
-  tileKey(tx:number,ty:number){ return `${tx},${ty}`; }
+    selFam: FamKey = 'electric';
+    selIdx = 0;
+    blockedTiles = new Set<string>();
 
-  preload() {
-    // atlases
-    this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
-    this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
-    this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
-    this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
-    this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
-    this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
-  }
+    worldToTile(x:number,y:number){ return { tx:Math.floor(x/this.map.tileSize), ty:Math.floor(y/this.map.tileSize) }; }
+    tileKey(tx:number,ty:number){ return `${tx},${ty}`; }
 
-  async create() {
-    // Mapa por JSON (query ?map=nombre o 'grass_dual')
-    const url = new URL(window.location.href);
-    const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
-    this.map = await loadMapDef(mapName);
+    preload() {
+      this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
+      this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
+      this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
+      this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
+      this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
+      this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
+    }
 
-    this.cameras.main.setBackgroundColor('#0c0e12');
+    async create() {
+      const url = new URL(window.location.href);
+      const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
+      this.map = await loadMapDef(mapName);
 
-    // Dibuja paths y construye "blockedTiles"
-    this.drawMapFromJSON(this.map);
+      this.cameras.main.setBackgroundColor('#0c0e12');
 
-    // UI
-    this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
-    this.infoText = this.add.text(16,34, `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`, { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }).setDepth(1000);
-    this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
-    this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
+      this.drawMapFromJSON(this.map);
 
-    // grupos
-    this.enemies = this.add.group();
-    this.projectiles = this.add.group();
+      this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
+      this.infoText = this.add.text(16,34, `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`, { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }).setDepth(1000);
+      this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
+      this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
 
-    // input ratón (colocar)
-    this.input.on('pointerdown', (p:Phaser.Input.Pointer)=>{
-      const model = GROUPS[this.selFam][this.selIdx];
-      const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
-      if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
-      if (this.blockedTiles.has(this.tileKey(tx,ty))) return;
-      if (this.gold < model.cost) return;
+      this.enemies = this.add.group();
+      this.projectiles = this.add.group();
 
-      this.gold -= model.cost;
-      this.goldText.setText(`🪙 ${this.gold}`);
+      this.input.on('pointerdown', (p:any)=>{
+        const model = GROUPS[this.selFam][this.selIdx];
+        const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
+        if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
+        if (this.blockedTiles.has(this.tileKey(tx,ty))) return;
+        if (this.gold < model.cost) return;
 
-      const x = tx*this.map.tileSize + this.map.tileSize/2;
-      const y = ty*this.map.tileSize + this.map.tileSize/2;
-      const spr = this.add.image(x,y,'towers', model.frame).setDepth(300);
-      this.towers.push({ sprite:spr, model, last:0 });
+        this.gold -= model.cost;
+        this.goldText.setText(`🪙 ${this.gold}`);
 
-      spr.setInteractive({ cursor:'pointer' });
-      spr.on('pointerover', ()=>{
-        this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
-        const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-        this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
-          .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
+        const x = tx*this.map.tileSize + this.map.tileSize/2;
+        const y = ty*this.map.tileSize + this.map.tileSize/2;
+        const spr = this.add.image(x,y,'towers', model.frame).setDepth(300);
+        this.towers.push({ sprite:spr, model, last:0 });
+
+        spr.setInteractive({ cursor:'pointer' });
+        spr.on('pointerover', ()=>{
+          this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
+          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
+          this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
+            .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
+        });
+        spr.on('pointerout', ()=>{
+          this.rangeCircle.setVisible(false);
+          this.tooltip.setVisible(false);
+        });
       });
-      spr.on('pointerout', ()=>{
-        this.rangeCircle.setVisible(false);
-        this.tooltip.setVisible(false);
+
+      window.addEventListener('keydown', (e)=>{
+        if (e.key==='1') { this.selFam='electric'; this.selIdx=0; }
+        if (e.key==='2') { this.selFam='fire';     this.selIdx=0; }
+        if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
+        if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
+        if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
       });
-    });
 
-    // teclado
-    window.addEventListener('keydown', (e)=>{
-      if (e.key==='1') { this.selFam='electric'; this.selIdx=0; }
-      if (e.key==='2') { this.selFam='fire';     this.selIdx=0; }
-      if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
-      if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
-      if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
-    });
+      this.setupWavesFromJSON(this.map);
+    }
 
-    // oleadas
-    this.setupWavesFromJSON(this.map);
-  }
+    drawMapFromJSON(map:MapDef){
+      const mark = (x:number,y:number)=> this.blockedTiles.add(this.tileKey(x,y));
 
-  drawMapFromJSON(map:MapDef){
-    // pre-marca path tiles como bloqueadas para construcción
-    const mark = (x:number,y:number)=> this.blockedTiles.add(this.tileKey(x,y));
-
-    // pinto un “suelo vacío” oscuro (opcional)
-    // this.add.rectangle(0,0,this.scale.width,this.scale.height,0x0c0e12,1).setOrigin(0,0);
-
-    // Dibujo los tiles de path según frame "terrain"
-    for (const lane of map.paths) {
-      for (const p of lane) {
-        if (p.x>=0 && p.x<map.width && p.y>=0 && p.y<map.height) {
-          const cx = p.x*map.tileSize + map.tileSize/2;
-          const cy = p.y*map.tileSize + map.tileSize/2;
-          this.add.image(cx,cy,'terrain64', map.terrain).setDepth(50);
-          mark(p.x,p.y);
+      for (const lane of map.paths) {
+        for (const p of lane) {
+          if (p.x>=0 && p.x<map.width && p.y>=0 && p.y<map.height) {
+            const cx = p.x*map.tileSize + map.tileSize/2;
+            const cy = p.y*map.tileSize + map.tileSize/2;
+            this.add.image(cx,cy,'terrain64', map.terrain).setDepth(50);
+            mark(p.x,p.y);
+          }
         }
       }
-    }
 
-    // Si quieres bloquear zonas adicionales (buildMask)
-    for (const r of map.buildMask) {
-      for (let x=r.x; x<r.x+r.w; x++)
-      for (let y=r.y; y<r.y+r.h; y++) mark(x,y);
-    }
-  }
-
-  setupWavesFromJSON(map:MapDef){
-    this.waveIndex = 0;
-    const next = () => {
-      this.waveIndex++;
-      const W = map.waves;
-      const count = W.baseCount + this.waveIndex*W.countPerWave;
-      const hp    = W.baseHP    + this.waveIndex*W.hpPerWave;
-      const speed = W.baseSpeed + this.waveIndex*W.speedPerWave;
-
-      // alterna carril
-      const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
-      const pathTiles = map.paths[pathIdx];
-      const pathWorld = pathTiles.map(pt => ({
-        x: pt.x*map.tileSize + map.tileSize/2,
-        y: pt.y*map.tileSize + map.tileSize/2
-      }));
-
-      for (let i=0;i<count;i++){
-        this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(pathWorld, hp, speed));
+      for (const r of map.buildMask) {
+        for (let x=r.x; x<r.x+r.w; x++)
+        for (let y=r.y; y<r.y+r.h; y++) mark(x,y);
       }
+    }
 
-      // cada 3 oleadas, lanza también el otro carril a la vez (pico de dificultad)
-      if (this.waveIndex % 3 === 0) {
-        const other = map.paths[pathIdx?0:1].map(pt=>({
+    setupWavesFromJSON(map:MapDef){
+      this.waveIndex = 0;
+      const next = () => {
+        this.waveIndex++;
+        const W = map.waves;
+        const count = W.baseCount + this.waveIndex*W.countPerWave;
+        const hp    = W.baseHP    + this.waveIndex*W.hpPerWave;
+        const speed = W.baseSpeed + this.waveIndex*W.speedPerWave;
+
+        const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
+        const pathTiles = map.paths[pathIdx];
+        const pathWorld = pathTiles.map(pt => ({
           x: pt.x*map.tileSize + map.tileSize/2,
           y: pt.y*map.tileSize + map.tileSize/2
         }));
-        for (let i=0;i<Math.floor(count*0.7);i++){
-          this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(other, Math.floor(hp*0.9), speed));
+
+        for (let i=0;i<count;i++){
+          this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(pathWorld, hp, speed));
+        }
+
+        if (this.waveIndex % 3 === 0) {
+          const other = map.paths[pathIdx?0:1].map(pt=>({
+            x: pt.x*map.tileSize + map.tileSize/2,
+            y: pt.y*map.tileSize + map.tileSize/2
+          }));
+          for (let i=0;i<Math.floor(count*0.7);i++){
+            this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(other, Math.floor(hp*0.9), speed));
+          }
+        }
+
+        this.time.delayedCall(count*W.spawnDelayMs + 5500, next);
+      };
+      next();
+    }
+
+    spawnEnemy(path:{x:number;y:number}[], hp:number, speed:number){
+      const start = path[0];
+      const e = this.add.image(start.x, start.y, 'enemies32', 'Goblin Scout').setDepth(120);
+      this.enemies.add(e);
+      (e as any).hp = hp;
+      (e as any).maxhp = hp;
+      (e as any).speed = speed;
+      (e as any).pathIndex = 1;
+
+      const bar = this.add.rectangle(e.x, e.y-18, 24, 3, 0x57ff57).setOrigin(0.5,0.5).setDepth(121);
+      (e as any).hpbar = bar;
+
+      (e as any).updateTick = ()=>{
+        const i = (e as any).pathIndex;
+        if (i >= path.length) { e.destroy(); bar.destroy(); return; }
+        const target = path[i];
+        const dx = target.x - e.x, dy = target.y - e.y;
+        const dist = Math.hypot(dx,dy);
+        const spd = (e as any).speed * (1/60);
+        if (dist <= spd) { e.setPosition(target.x, target.y); (e as any).pathIndex++; }
+        else { e.setPosition(e.x + (dx/dist)*spd, e.y + (dy/dist)*spd); }
+        const ratio = Math.max(0, (e as any).hp / (e as any).maxhp);
+        bar.setPosition(e.x, e.y-18).setScale(ratio,1);
+      };
+    }
+
+    fireAt(t: {sprite:any; model:TowerModel}, target:any){
+      const m = t.model;
+      const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', m.projectile).setDepth(200);
+      this.projectiles.add(p);
+      (p as any).vx = (target.x - p.x);
+      (p as any).vy = (target.y - p.y);
+      const len = Math.hypot((p as any).vx,(p as any).vy) || 1;
+      const speed = 520;
+      (p as any).vx = (p as any).vx / len * speed * (1/60);
+      (p as any).vy = (p as any).vy / len * speed * (1/60);
+      (p as any).dmg = m.dmg;
+      (p as any).fam = m.fam;
+      (p as any).slow = m.slow;
+      (p as any).dot  = m.dot;
+      (p as any).chain= m.chain;
+      (p as any).ttl = 900;
+    }
+
+    chainLightning(origin:any, baseDmg:number, hops:number, falloff:number){
+      const visited = new Set<any>();
+      const queue:{ node:any; dmg:number; depth:number }[] = [];
+      visited.add(origin);
+      queue.push({ node: origin, dmg: baseDmg, depth: 0 });
+
+      while (queue.length){
+        const { node, dmg, depth } = queue.shift()!;
+        if (depth>=hops) continue;
+
+        let best:any = null;
+        let bestD = 999999;
+        this.enemies.getChildren().forEach((c:any)=>{
+          if (!c || !c.active || visited.has(c)) return;
+          const d = Phaser.Math.Distance.Between(node.x,node.y,c.x,c.y);
+          if (d < 140 && d < bestD) { best=c; bestD=d; }
+        });
+
+        if (best){
+          const g = this.add.graphics().setDepth(220);
+          g.lineStyle(2,0x9ad0ff,0.85);
+          g.beginPath(); g.moveTo(node.x,node.y); g.lineTo(best.x,best.y); g.strokePath();
+          this.time.delayedCall(80, ()=> g.destroy());
+
+          (best as any).hp -= Math.max(1, Math.round(dmg));
+          visited.add(best);
+
+          queue.push({ node:best, dmg: dmg*falloff, depth: depth+1 });
+        }
+      }
+    }
+
+    doHit(proj:any, enemy:any){
+      const p:any = proj; const e:any = enemy;
+      e.hp -= p.dmg;
+
+      if (p.fam==='frost' && p.slow){
+        const old = e.speed;
+        e.speed = old * p.slow.factor;
+        this.time.delayedCall(p.slow.ms, ()=> e && (e.speed = old));
+      }
+      if (p.fam==='fire' && p.dot){
+        const ticks = Math.floor(p.dot.ms/300);
+        for (let i=1;i<=ticks;i++){
+          this.time.delayedCall(i*300, ()=> e && (e.hp -= Math.round(p.dot.dps*0.3)));
+        }
+      }
+      if (p.fam==='electric' && p.chain){
+        this.chainLightning(enemy, p.dmg, p.chain.hops, p.chain.falloff);
+      }
+
+      if (e.hp <= 0){
+        const puff = this.add.image(e.x,e.y,'fx','Poison Cloud').setDepth(210);
+        this.time.delayedCall(220, ()=> puff.destroy());
+
+        e.hpbar?.destroy();
+        e.destroy();
+        this.gold += 6 + Math.floor(this.waveIndex*0.6);
+        this.goldText.setText(`🪙 ${this.gold}`);
+      }
+
+      proj.destroy();
+    }
+
+    update(time:number, dt:number){
+      this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
+
+      for (const t of this.towers){
+        if (time < t.last + t.model.cd) continue;
+
+        let best:any = null;
+        let bestD= 1e9;
+        this.enemies.getChildren().forEach((c:any)=>{
+          if (!c || !c.active) return;
+          const d = Phaser.Math.Distance.Between(t.sprite.x,t.sprite.y,c.x,c.y);
+          if (d < t.model.range && d < bestD){ best=c; bestD=d; }
+        });
+        if (best){
+          t.last = time;
+          this.fireAt(t, best);
         }
       }
 
-      // próxima wave
-      this.time.delayedCall(count*W.spawnDelayMs + 5500, next);
-    };
-    next();
-  }
-
-  spawnEnemy(path:{x:number;y:number}[], hp:number, speed:number){
-    const start = path[0];
-    const e = this.add.image(start.x, start.y, 'enemies32', 'Goblin Scout').setDepth(120);
-    this.enemies.add(e);
-    (e as any).hp = hp;
-    (e as any).maxhp = hp;
-    (e as any).speed = speed;
-    (e as any).pathIndex = 1;
-
-    // barra simple
-    const bar = this.add.rectangle(e.x, e.y-18, 24, 3, 0x57ff57).setOrigin(0.5,0.5).setDepth(121);
-    (e as any).hpbar = bar;
-
-    (e as any).updateTick = ()=>{
-      const i = (e as any).pathIndex;
-      if (i >= path.length) {
-        // llegó al final – penalización?
-        e.destroy(); bar.destroy();
-        return;
-      }
-      const target = path[i];
-      const dx = target.x - e.x, dy = target.y - e.y;
-      const dist = Math.hypot(dx,dy);
-      const spd = (e as any).speed * (1/60);
-      if (dist <= spd) {
-        e.setPosition(target.x, target.y);
-        (e as any).pathIndex++;
-      } else {
-        e.setPosition(e.x + (dx/dist)*spd, e.y + (dy/dist)*spd);
-      }
-      // hp bar
-      const ratio = Math.max(0, (e as any).hp / (e as any).maxhp);
-      bar.setPosition(e.x, e.y-18).setScale(ratio,1);
-    };
-  }
-
-  // ---- PROYECTIL + HIT ----
-  fireAt(t: {sprite:Phaser.GameObjects.Image; model:TowerModel}, target:Phaser.GameObjects.Image){
-    const m = t.model;
-    const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', m.projectile).setDepth(200);
-    this.projectiles.add(p);
-    (p as any).vx = (target.x - p.x);
-    (p as any).vy = (target.y - p.y);
-    const len = Math.hypot((p as any).vx,(p as any).vy) || 1;
-    const speed = 520;
-    (p as any).vx = (p as any).vx / len * speed * (1/60);
-    (p as any).vy = (p as any).vy / len * speed * (1/60);
-    (p as any).dmg = m.dmg;
-    (p as any).fam = m.fam;
-    (p as any).slow = m.slow;
-    (p as any).dot  = m.dot;
-    (p as any).chain= m.chain;
-    (p as any).ttl = 900; // ms
-  }
-
-  chainLightning(origin:Phaser.GameObjects.Image, baseDmg:number, hops:number, falloff:number){
-    // encadenado sin recursión: BFS pequeño con conjunto visitado
-    const visited = new Set<Phaser.GameObjects.Image>();
-    const queue:{ node:Phaser.GameObjects.Image; dmg:number; depth:number }[] = [];
-    visited.add(origin);
-    queue.push({ node: origin, dmg: baseDmg, depth: 0 });
-
-    while (queue.length){
-      const { node, dmg, depth } = queue.shift()!;
-      if (depth>=hops) continue;
-
-      // encuentra el enemigo más cercano no visitado
-      let best:Phaser.GameObjects.Image|null = null;
-      let bestD = 999999;
-      this.enemies.getChildren().forEach((c:any)=>{
-        if (!c || !c.active || visited.has(c)) return;
-        const d = Phaser.Math.Distance.Between(node.x,node.y,c.x,c.y);
-        if (d < 140 && d < bestD) { best=c; bestD=d; }
+      this.projectiles.getChildren().forEach((p:any)=>{
+        p.x += p.vx; p.y += p.vy; p.ttl -= dt;
+        if (p.ttl<=0){ p.destroy(); return; }
+        let hit:any = null;
+        this.enemies.getChildren().some((e:any)=>{
+          if (!e || !e.active) return false;
+          const d = Phaser.Math.Distance.Between(p.x,p.y,e.x,e.y);
+          if (d < 18){ hit=e; return true; }
+          return false;
+        });
+        if (hit) this.doHit(p, hit);
       });
-
-      if (best){
-        // rayo visual (opcional)
-        const g = this.add.graphics().setDepth(220);
-        g.lineStyle(2,0x9ad0ff,0.85);
-        g.beginPath(); g.moveTo(node.x,node.y); g.lineTo(best.x,best.y); g.strokePath();
-        this.time.delayedCall(80, ()=> g.destroy());
-
-        // daño
-        (best as any).hp -= Math.max(1, Math.round(dmg));
-        visited.add(best);
-
-        // siguiente salto
-        queue.push({ node:best, dmg: dmg*falloff, depth: depth+1 });
-      }
     }
-  }
-
-  doHit(proj:Phaser.GameObjects.Image, enemy:Phaser.GameObjects.Image){
-    const p:any = proj; const e:any = enemy;
-    e.hp -= p.dmg;
-
-    // efectos
-    if (p.fam==='frost' && p.slow){
-      const old = e.speed;
-      e.speed = old * p.slow.factor;
-      this.time.delayedCall(p.slow.ms, ()=> e && (e.speed = old));
-    }
-    if (p.fam==='fire' && p.dot){
-      const ticks = Math.floor(p.dot.ms/300);
-      for (let i=1;i<=ticks;i++){
-        this.time.delayedCall(i*300, ()=> e && (e.hp -= Math.round(p.dot.dps*0.3)));
-      }
-    }
-    if (p.fam==='electric' && p.chain){
-      this.chainLightning(enemy, p.dmg, p.chain.hops, p.chain.falloff);
-    }
-
-    // muerte
-    if (e.hp <= 0){
-      // efecto simple
-      const puff = this.add.image(e.x,e.y,'fx','Poison Cloud').setDepth(210);
-      this.time.delayedCall(220, ()=> puff.destroy());
-
-      e.hpbar?.destroy();
-      e.destroy();
-      this.gold += 6 + Math.floor(this.waveIndex*0.6);
-      this.goldText.setText(`🪙 ${this.gold}`);
-    }
-
-    proj.destroy();
-  }
-
-  update(time:number, dt:number){
-    // enemigos
-    this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
-
-    // torres
-    for (const t of this.towers){
-      if (time < t.last + t.model.cd) continue;
-
-      // busca objetivo más cercano dentro de rango
-      let best:Phaser.GameObjects.Image|null = null;
-      let bestD= 1e9;
-      this.enemies.getChildren().forEach((c:any)=>{
-        if (!c || !c.active) return;
-        const d = Phaser.Math.Distance.Between(t.sprite.x,t.sprite.y,c.x,c.y);
-        if (d < t.model.range && d < bestD){ best=c; bestD=d; }
-      });
-      if (best){
-        t.last = time;
-        this.fireAt(t, best);
-      }
-    }
-
-    // proyectiles
-    this.projectiles.getChildren().forEach((p:any)=>{
-      p.x += p.vx; p.y += p.vy; p.ttl -= dt;
-      if (p.ttl<=0){ p.destroy(); return; }
-      // colisión AABB simple
-      let hit:Phaser.GameObjects.Image|null = null;
-      this.enemies.getChildren().some((e:any)=>{
-        if (!e || !e.active) return false;
-        const d = Phaser.Math.Distance.Between(p.x,p.y,e.x,e.y);
-        if (d < 18){ hit=e; return true; }
-        return false;
-      });
-      if (hit) this.doHit(p, hit);
-    });
-  }
+  };
 }
+
+// ========= Componente React =========
+import React, { useEffect, useRef, useState } from 'react';
 
 export default function BattlePage(){
   const rootRef = useRef<HTMLDivElement>(null);
-  const gameRef = useRef<Phaser.Game|null>(null);
+  const gameRef = useRef<any>(null);
   const [mounted,setMounted] = useState(false);
 
   useEffect(()=>{
+    if (!PhaserLib) return; // en SSR no hay Phaser
     setMounted(true);
-    const w = 1180; const h = 680;
 
-    const config: Phaser.Types.Core.GameConfig = {
-      type: Phaser.AUTO,
-      width: w,
-      height: h,
+    const TD = createSceneClass();
+    const config:any = {
+      type: PhaserLib.AUTO,
+      width: 1180,
+      height: 680,
       parent: rootRef.current || undefined,
       backgroundColor: '#0c0e12',
       physics: { default: 'arcade' },
       scene: TD,
     };
 
-    gameRef.current = new Phaser.Game(config);
+    gameRef.current = new PhaserLib.Game(config);
 
     return ()=> {
-      gameRef.current?.destroy(true);
+      try { gameRef.current?.destroy(true); } catch {}
       gameRef.current = null;
     };
   },[]);
