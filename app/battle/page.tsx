@@ -1,12 +1,12 @@
+// app/battle/page.tsx
 'use client';
 
-import dynamic from 'next/dynamic';
-
-// Renderiza el juego solo en el cliente (sin SSR)
-const BattleClient = dynamic(() => import('./BattleClient'), { ssr: false });
+import NextDynamic from 'next/dynamic';
 
 export const dynamic = 'force-dynamic';
-export const revalidate = false;
+export const revalidate = 0;
+
+const BattleClient = NextDynamic(() => import('./BattleClient'), { ssr: false });
 
 export default function Page() {
   return <BattleClient />;
