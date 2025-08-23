@@ -1,8 +1,25 @@
 {
-  "biome": "grass",
-  "gridW": 18,
-  "gridH": 9,
-  "lanes": [0, 2],
-  "hpMul": 1.0,
-  "speedMul": 1.0
+  "name": "grass_dual",
+  "tileSize": 64,
+  "width": 20,
+  "height": 10,
+  "terrain": "Grass Path",
+  "buildMask": [
+    {"x":0,"y":3,"w":20,"h":1},
+    {"x":0,"y":5,"w":20,"h":1}
+  ],
+  "paths": [
+    [{"x":-1,"y":3},{"x":0,"y":3},{"x":19,"y":3},{"x":20,"y":3}],
+    [{"x":-1,"y":5},{"x":0,"y":5},{"x":19,"y":5},{"x":20,"y":5}]
+  ],
+  "waves": {
+    "baseCount": 10,
+    "countPerWave": 2,
+    "baseHP": 28,
+    "hpPerWave": 8,
+    "baseSpeed": 52,
+    "speedPerWave": 2,
+    "spawnDelayMs": 600,
+    "rewardBase": 4
+  }
 }
