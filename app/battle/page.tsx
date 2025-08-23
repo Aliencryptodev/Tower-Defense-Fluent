@@ -1,8 +1,12 @@
-// Server Component: configura la ruta como 100% dinámica y sin caché
-export const revalidate = false;
-export const dynamic = 'force-dynamic';
+'use client';
 
-import BattleClient from './BattleClient';
+import dynamic from 'next/dynamic';
+
+// Renderiza el juego solo en el cliente (sin SSR)
+const BattleClient = dynamic(() => import('./BattleClient'), { ssr: false });
+
+export const dynamic = 'force-dynamic';
+export const revalidate = false;
 
 export default function Page() {
   return <BattleClient />;
