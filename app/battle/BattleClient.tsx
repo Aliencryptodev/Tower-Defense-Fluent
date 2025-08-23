@@ -1,13 +1,8 @@
 'use client';
 
-// Cargar Phaser solo en el navegador (evita SSR)
-let PhaserLib: any = null;
-if (typeof window !== 'undefined') {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  PhaserLib = require('phaser');
-}
+import React, { useEffect, useRef, useState } from 'react';
 
-/* ===================== Tipos de mapa (no dependen de Phaser) ===================== */
+// ============ Tipos mínimos del mapa (no dependen de Phaser) ============
 type MapPoint = { x: number; y: number };
 type MapRect  = { x: number; y: number; w: number; h: number };
 type MapDef = {
@@ -17,14 +12,14 @@ type MapDef = {
   buildMask: MapRect[];
   paths: MapPoint[][];
   waves: {
-    baseCount:number; countPerWave:number;
-    baseHP:number; hpPerWave:number;
-    baseSpeed:number; speedPerWave:number;
-    spawnDelayMs:number; rewardBase:number;
+    baseCount: number; countPerWave: number;
+    baseHP: number;    hpPerWave: number;
+    baseSpeed: number; speedPerWave: number;
+    spawnDelayMs: number; rewardBase: number;
   }
 };
 
-type FamKey = 'electric' | 'fire' | 'frost';
+type FamKey = 'electric'|'fire'|'frost';
 
 type TowerModel = {
   frame: string;
@@ -39,7 +34,7 @@ type TowerModel = {
   dot?:   { dps:number; ms:number };
 };
 
-/* ===================== Modelos de torres ===================== */
+// ======== Modelos de torres ========
 const ELECTRIC: TowerModel[] = [
   { frame:'Arc Coil I',     fam:'electric', cost:45, dmg:18, range:190, cd:700, projectile:'Lightning Bolt', chain:{hops:2,falloff:0.7} },
   { frame:'Tesla Grid III', fam:'electric', cost:85, dmg:30, range:210, cd:620, projectile:'Lightning Bolt', chain:{hops:3,falloff:0.7} },
@@ -56,26 +51,22 @@ const FROST: TowerModel[] = [
   { frame:'Absolute Zero V',    fam:'frost', cost:140,dmg:40, range:220, cd:520, projectile:'Ice Shard', slow:{factor:0.5,ms:1800} },
 ];
 
-const GROUPS: Record<FamKey,TowerModel[]> = {
+const GROUPS: Record<FamKey, TowerModel[]> = {
   electric: ELECTRIC,
   fire: FIRE,
   frost: FROST,
 };
 
 // util: carga JSON de mapa
-async function loadMapDef(name: string): Promise<MapDef> {
-  const res = await fetch(`/maps/${name}.json`, { cache: 'no-store' });
+async function loadMapDef(name:string): Promise<MapDef> {
+  const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
   if (!res.ok) throw new Error(`map ${name} not found`);
   return res.json();
 }
 
-/* ===================== Escena Phaser ===================== */
-function createSceneClass() {
-  const Phaser = PhaserLib;
-
+// ========= Escena (definida con Phaser cargado dinámicamente) =========
+function createSceneClass(Phaser: any) {
   return class TD extends Phaser.Scene {
-    // estado
-    ready = false;  // <- IMPORTANTE: evita que update() corra antes de tiempo
     map!: MapDef;
     gold = 320;
     waveIndex = 0;
@@ -86,9 +77,10 @@ function createSceneClass() {
     towers: { sprite:any; model:TowerModel; last:number }[] = [];
 
     goldText!: any;
-    infoText!: any;
     tooltip!: any;
     rangeCircle!: any;
+    pauseText!: any;
+    isPaused = false;
 
     selFam: FamKey = 'electric';
     selIdx = 0;
@@ -98,87 +90,85 @@ function createSceneClass() {
     tileKey(tx:number,ty:number){ return `${tx},${ty}`; }
 
     preload() {
-      this.load.atlas('terrain64',  '/assets/terrain_atlas.png',   '/assets/terrain_atlas.json');
-      this.load.atlas('ui32',       '/assets/ui_atlas.png',        '/assets/ui_atlas.json');
-      this.load.atlas('towers',     '/assets/towers_atlas.png',    '/assets/towers_atlas.json');
-      this.load.atlas('enemies32',  '/assets/enemies32_atlas.png', '/assets/enemies32_atlas.json');
+      this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
+      this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
+      this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
+      this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
       this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
-      this.load.atlas('fx',         '/assets/effects_atlas.png',   '/assets/effects_atlas.json');
+      this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
     }
 
     async create() {
-      // 1) Crear grupos ANTES de cualquier await (clave para evitar el error)
+      const url = new URL(window.location.href);
+      const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
+      this.map = await loadMapDef(mapName);
+
+      this.cameras.main.setBackgroundColor('#0c0e12');
+
+      this.drawMapFromJSON(this.map);
+
+      this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
+      this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
+      this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
+
+      // Badge de pausa
+      this.pauseText = this.add.text(this.scale.width/2, 18, 'PAUSE', {
+        color:'#ffb3b3', fontFamily:'monospace', fontSize:'16px', backgroundColor:'rgba(0,0,0,0.35)'
+      }).setDepth(1000).setOrigin(0.5,0).setVisible(false);
+
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
-      try {
-        const url = new URL(window.location.href);
-        const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
-        this.map = await loadMapDef(mapName);
+      this.input.on('pointerdown', (p:any)=>{
+        if (this.isPaused) return;
+        const model = GROUPS[this.selFam][this.selIdx];
+        const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
+        if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
+        if (this.blockedTiles.has(this.tileKey(tx,ty))) return;
+        if (this.gold < model.cost) return;
 
-        this.cameras.main.setBackgroundColor('#0c0e12');
+        this.gold -= model.cost;
+        this.goldText.setText(`🪙 ${this.gold}`);
 
-        this.drawMapFromJSON(this.map);
+        const x = tx*this.map.tileSize + this.map.tileSize/2;
+        const y = ty*this.map.tileSize + this.map.tileSize/2;
+        const spr = this.add.image(x,y,'towers', model.frame).setDepth(300);
+        this.towers.push({ sprite:spr, model, last:0 });
 
-        this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
-        this.infoText = this.add.text(
-          16,34,
-          `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`,
-          { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }
-        ).setDepth(1000);
-        this.tooltip = this.add.text(
-          0,0,'',
-          { color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }
-        ).setDepth(1200).setVisible(false);
-        this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
-
-        // input colocar torre
-        this.input.on('pointerdown', (p:any)=>{
-          const model = GROUPS[this.selFam][this.selIdx];
-          const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
-          if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
-          if (this.blockedTiles.has(this.tileKey(tx,ty))) return;
-          if (this.gold < model.cost) return;
-
-          this.gold -= model.cost;
-          this.goldText.setText(`🪙 ${this.gold}`);
-
-          const x = tx*this.map.tileSize + this.map.tileSize/2;
-          const y = ty*this.map.tileSize + this.map.tileSize/2;
-          const spr = this.add.image(x,y,'towers', model.frame).setDepth(300);
-          this.towers.push({ sprite:spr, model, last:0 });
-
-          spr.setInteractive({ cursor:'pointer' });
-          spr.on('pointerover', ()=>{
-            this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
-            const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-            this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
-              .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
-          });
-          spr.on('pointerout', ()=>{
-            this.rangeCircle.setVisible(false);
-            this.tooltip.setVisible(false);
-          });
+        spr.setInteractive({ cursor:'pointer' });
+        spr.on('pointerover', ()=>{
+          this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
+          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
+          this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
+            .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
         });
-
-        // teclas selección
-        window.addEventListener('keydown', (e)=>{
-          if (e.key==='1') { this.selFam='electric'; this.selIdx=0; }
-          if (e.key==='2') { this.selFam='fire';     this.selIdx=0; }
-          if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
-          if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
-          if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+        spr.on('pointerout', ()=>{
+          this.rangeCircle.setVisible(false);
+          this.tooltip.setVisible(false);
         });
+      });
 
-        this.setupWavesFromJSON(this.map);
+      // Controles
+      window.addEventListener('keydown', this.handleKeydown);
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        window.removeEventListener('keydown', this.handleKeydown);
+      });
 
-        // listo para empezar a actualizar
-        this.ready = true;
-      } catch (err) {
-        console.error('[TD] Error creando la escena:', err);
-        this.add.text(16, 60, 'No se pudo inicializar la escena', { color:'#ff8080', fontFamily:'monospace' });
-      }
+      this.setupWavesFromJSON(this.map);
     }
+
+    handleKeydown = (e: KeyboardEvent) => {
+      if (e.key==='1') { this.selFam='electric'; this.selIdx=0; }
+      if (e.key==='2') { this.selFam='fire';     this.selIdx=0; }
+      if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
+      if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
+      if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+
+      if (e.code === 'Space') {
+        this.isPaused = !this.isPaused;
+        this.pauseText.setVisible(this.isPaused);
+      }
+    };
 
     drawMapFromJSON(map:MapDef){
       const mark = (x:number,y:number)=> this.blockedTiles.add(this.tileKey(x,y));
@@ -203,6 +193,8 @@ function createSceneClass() {
     setupWavesFromJSON(map:MapDef){
       this.waveIndex = 0;
       const next = () => {
+        if (this.isPaused) { this.time.delayedCall(500, next); return; }
+
         this.waveIndex++;
         const W = map.waves;
         const count = W.baseCount + this.waveIndex*W.countPerWave;
@@ -220,7 +212,6 @@ function createSceneClass() {
           this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(pathWorld, hp, speed));
         }
 
-        // de vez en cuando spawnear por el otro camino
         if (this.waveIndex % 3 === 0) {
           const other = map.paths[pathIdx?0:1].map(pt=>({
             x: pt.x*map.tileSize + map.tileSize/2,
@@ -345,9 +336,7 @@ function createSceneClass() {
     }
 
     update(time:number, dt:number){
-      // Bloqueo de seguridad: no actualizar hasta estar listos
-      if (!this.ready) return;
-      if (!this.enemies || !this.projectiles) return;
+      if (this.isPaused) return;
 
       this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
 
@@ -383,42 +372,44 @@ function createSceneClass() {
   };
 }
 
-/* ===================== Componente React que monta Phaser ===================== */
-import React, { useEffect, useRef, useState } from 'react';
-
-export default function BattleClient() {
+// ========= Componente React =========
+export default function BattleClient(){
   const rootRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
-  const [mounted, setMounted] = useState(false);
+  const [mounted,setMounted] = useState(false);
 
-  useEffect(() => {
-    if (!PhaserLib) return; // SSR: sin Phaser
-    setMounted(true);
+  useEffect(()=>{
+    let destroyer: (()=>void)|null = null;
 
-    const TD = createSceneClass();
-    const config:any = {
-      type: PhaserLib.AUTO,
-      width: 1180,
-      height: 680,
-      parent: rootRef.current || undefined,
-      backgroundColor: '#0c0e12',
-      physics: { default: 'arcade' },
-      scene: TD,
-    };
+    (async () => {
+      const PhaserLib = (await import('phaser')).default;
+      setMounted(true);
 
-    gameRef.current = new PhaserLib.Game(config);
+      const TD = createSceneClass(PhaserLib);
+      const config:any = {
+        type: PhaserLib.AUTO,
+        width: 1180,
+        height: 680,
+        parent: rootRef.current || undefined,
+        backgroundColor: '#0c0e12',
+        physics: { default: 'arcade' },
+        scene: TD,
+        scale: { mode: PhaserLib.Scale.FIT, autoCenter: PhaserLib.Scale.CENTER_BOTH },
+      };
 
-    return () => {
-      try { gameRef.current?.destroy(true); } catch {}
-      gameRef.current = null;
-    };
-  }, []);
+      const game = new PhaserLib.Game(config);
+      gameRef.current = game;
+      destroyer = () => { try { game.destroy(true); } catch {} gameRef.current = null; };
+    })();
+
+    return ()=> { destroyer?.(); };
+  },[]);
 
   return (
     <div style={{padding:'8px'}}>
       <h3 style={{color:'#e8f4ff',fontFamily:'monospace',margin:'4px 0'}}>Fluent Tower Defense — MVP</h3>
       <div style={{color:'#a9b7ff',fontFamily:'monospace',fontSize:12,marginBottom:6}}>
-        Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
+        Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin · <b>Espacio</b> pausa · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
       </div>
       <div ref={rootRef} />
       {!mounted && <div style={{color:'#99a',fontFamily:'monospace',marginTop:8}}>Cargando…</div>}
