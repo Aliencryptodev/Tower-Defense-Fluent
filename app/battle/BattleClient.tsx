@@ -1,12 +1,14 @@
 'use client';
+import React, { useEffect, useRef, useState } from 'react';
 
+// Importar Phaser solo en navegador
 let PhaserLib: any = null;
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   PhaserLib = require('phaser');
 }
 
-// ======== Tipos ========
+/** ---------- Modelos y tipos ---------- */
 type MapPoint = { x:number; y:number };
 type MapRect  = { x:number; y:number; w:number; h:number };
 type MapDef = {
@@ -22,9 +24,16 @@ type MapDef = {
     spawnDelayMs:number; rewardBase:number;
   }
 };
+
 type FamKey = 'electric'|'fire'|'frost';
+
 type TowerModel = {
-  frame:string; fam: FamKey; cost:number; dmg:number; range:number; cd:number;
+  frame:string;
+  fam: FamKey;
+  cost:number;
+  dmg:number;
+  range:number;
+  cd:number;
   projectile:'Lightning Bolt'|'Fireball'|'Ice Shard';
   chain?: { hops:number; falloff:number };
   slow?:  { factor:number; ms:number };
@@ -46,6 +55,7 @@ const FROST: TowerModel[] = [
   { frame:'Frost Cannon III',   fam:'frost', cost:85, dmg:26, range:200, cd:560, projectile:'Ice Shard', slow:{factor:0.6,ms:1500} },
   { frame:'Absolute Zero V',    fam:'frost', cost:140,dmg:40, range:220, cd:520, projectile:'Ice Shard', slow:{factor:0.5,ms:1800} },
 ];
+
 const GROUPS: Record<FamKey,TowerModel[]> = { electric:ELECTRIC, fire:FIRE, frost:FROST };
 
 async function loadMapDef(name:string): Promise<MapDef> {
@@ -54,14 +64,12 @@ async function loadMapDef(name:string): Promise<MapDef> {
   return res.json();
 }
 
-// ========= Escena =========
+/** ---------- Escena de Phaser ---------- */
 function createSceneClass() {
   const Phaser = PhaserLib;
 
   return class TD extends Phaser.Scene {
     map!: MapDef;
-    ready = false;
-
     gold = 320;
     waveIndex = 0;
     laneToggle = 0;
@@ -71,9 +79,12 @@ function createSceneClass() {
     towers: { sprite:any; model:TowerModel; last:number }[] = [];
 
     goldText!: any;
-    infoText!: any;
     tooltip!: any;
     rangeCircle!: any;
+
+    // QoL
+    paused = false;
+    speedMul = 1; // 1x / 2x
 
     selFam: FamKey = 'electric';
     selIdx = 0;
@@ -84,29 +95,29 @@ function createSceneClass() {
 
     preload() {
       this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
-      this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
       this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
       this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
       this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
       this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
     }
 
-    // ⚠️ NO async: inicializamos todo y cargamos el mapa en una IIFE
-    create() {
+    async create() {
+      const url = new URL(window.location.href);
+      const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
+      this.map = await loadMapDef(mapName);
+
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      // Crear grupos y UI ya, así existen aunque el mapa aún no esté
-      this.enemies = this.add.group();
-      this.projectiles = this.add.group();
+      this.drawMapFromJSON(this.map);
 
       this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
-      this.infoText = this.add.text(16,34, `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`, { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }).setDepth(1000);
       this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
       this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
 
-      // Handlers: no hacen nada hasta que ready = true
+      this.enemies = this.add.group();
+      this.projectiles = this.add.group();
+
       this.input.on('pointerdown', (p:any)=>{
-        if (!this.ready) return;
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
@@ -123,16 +134,18 @@ function createSceneClass() {
 
         spr.setInteractive({ cursor:'pointer' });
         spr.on('pointerover', ()=>{
-          if (!this.ready) return;
           this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
           const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-          this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
-            .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
+          const extras =
+            model.fam==='electric' && model.chain ? ` · Chain ${model.chain.hops}` :
+            model.fam==='frost'    && model.slow  ? ` · Slow ${(Math.round((1-model.slow.factor)*100))}%` :
+            model.fam==='fire'     && model.dot   ? ` · DoT ${model.dot.dps}/s` : '';
+          this.tooltip
+            .setVisible(true)
+            .setPosition(spr.x+18, spr.y-18)
+            .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms${extras}`);
         });
-        spr.on('pointerout', ()=>{
-          this.rangeCircle.setVisible(false);
-          this.tooltip.setVisible(false);
-        });
+        spr.on('pointerout', ()=>{ this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
       });
 
       window.addEventListener('keydown', (e)=>{
@@ -141,21 +154,19 @@ function createSceneClass() {
         if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
         if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
         if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+
+        // QoL: pausa/2x
+        if (e.code==='Space') {
+          this.paused = !this.paused;
+          this.time.paused = this.paused;
+        }
+        if (e.key.toLowerCase()==='f') {
+          this.speedMul = this.speedMul === 1 ? 2 : 1;
+          this.time.timeScale = this.speedMul;
+        }
       });
 
-      // Cargar mapa de forma asíncrona y marcar listo al final
-      (async () => {
-        const url = new URL(window.location.href);
-        const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
-        this.map = await loadMapDef(mapName);
-
-        this.drawMapFromJSON(this.map);
-        this.setupWavesFromJSON(this.map);
-
-        this.ready = true;
-      })().catch(err => {
-        console.error('Error loading map:', err);
-      });
+      this.setupWavesFromJSON(this.map);
     }
 
     drawMapFromJSON(map:MapDef){
@@ -171,7 +182,6 @@ function createSceneClass() {
           }
         }
       }
-
       for (const r of map.buildMask) {
         for (let x=r.x; x<r.x+r.w; x++)
         for (let y=r.y; y<r.y+r.h; y++) mark(x,y);
@@ -189,20 +199,15 @@ function createSceneClass() {
 
         const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
         const pathTiles = map.paths[pathIdx];
-        const pathWorld = pathTiles.map(pt => ({
-          x: pt.x*map.tileSize + map.tileSize/2,
-          y: pt.y*map.tileSize + map.tileSize/2
-        }));
+        const pathWorld = pathTiles.map(pt => ({ x: pt.x*map.tileSize + map.tileSize/2, y: pt.y*map.tileSize + map.tileSize/2 }));
 
         for (let i=0;i<count;i++){
           this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(pathWorld, hp, speed));
         }
 
+        // Eventual doble carril
         if (this.waveIndex % 3 === 0) {
-          const other = map.paths[pathIdx?0:1].map(pt=>({
-            x: pt.x*map.tileSize + map.tileSize/2,
-            y: pt.y*map.tileSize + map.tileSize/2
-          }));
+          const other = map.paths[pathIdx?0:1].map(pt=>({ x: pt.x*map.tileSize + map.tileSize/2, y: pt.y*map.tileSize + map.tileSize/2 }));
           for (let i=0;i<Math.floor(count*0.7);i++){
             this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(other, Math.floor(hp*0.9), speed));
           }
@@ -231,7 +236,7 @@ function createSceneClass() {
         const target = path[i];
         const dx = target.x - e.x, dy = target.y - e.y;
         const dist = Math.hypot(dx,dy);
-        const spd = (e as any).speed * (1/60);
+        const spd = (e as any).speed * (1/60) * this.speedMul;
         if (dist <= spd) { e.setPosition(target.x, target.y); (e as any).pathIndex++; }
         else { e.setPosition(e.x + (dx/dist)*spd, e.y + (dy/dist)*spd); }
         const ratio = Math.max(0, (e as any).hp / (e as any).maxhp);
@@ -246,9 +251,9 @@ function createSceneClass() {
       (p as any).vx = (target.x - p.x);
       (p as any).vy = (target.y - p.y);
       const len = Math.hypot((p as any).vx,(p as any).vy) || 1;
-      const speed = 520;
-      (p as any).vx = (p as any).vx / len * speed * (1/60);
-      (p as any).vy = (p as any).vy / len * speed * (1/60);
+      const speed = 520 * (1/60);
+      (p as any).vx = (p as any).vx / len * speed;
+      (p as any).vy = (p as any).vy / len * speed;
       (p as any).dmg = m.dmg;
       (p as any).fam = m.fam;
       (p as any).slow = m.slow;
@@ -321,13 +326,13 @@ function createSceneClass() {
       proj.destroy();
     }
 
-    update(time:number, dt:number){
-      if (!this.ready) return; // 🔒 Nada hasta que el mapa esté cargado
+    update(_time:number, dt:number){
+      if (this.paused) return;
 
       this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
 
       for (const t of this.towers){
-        if (time < t.last + t.model.cd) continue;
+        if (_time < t.last + t.model.cd/this.speedMul) continue;
 
         let best:any = null;
         let bestD= 1e9;
@@ -337,13 +342,15 @@ function createSceneClass() {
           if (d < t.model.range && d < bestD){ best=c; bestD=d; }
         });
         if (best){
-          t.last = time;
+          t.last = _time;
           this.fireAt(t, best);
         }
       }
 
       this.projectiles.getChildren().forEach((p:any)=>{
-        p.x += p.vx; p.y += p.vy; p.ttl -= dt;
+        p.x += p.vx * this.speedMul;
+        p.y += p.vy * this.speedMul;
+        p.ttl -= dt * this.speedMul;
         if (p.ttl<=0){ p.destroy(); return; }
         let hit:any = null;
         this.enemies.getChildren().some((e:any)=>{
@@ -358,9 +365,7 @@ function createSceneClass() {
   };
 }
 
-// ========= Componente React =========
-import React, { useEffect, useRef, useState } from 'react';
-
+/** ---------- Componente React ---------- */
 export default function BattleClient(){
   const rootRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
@@ -393,7 +398,8 @@ export default function BattleClient(){
     <div style={{padding:'8px'}}>
       <h3 style={{color:'#e8f4ff',fontFamily:'monospace',margin:'4px 0'}}>Fluent Tower Defense — MVP</h3>
       <div style={{color:'#a9b7ff',fontFamily:'monospace',fontSize:12,marginBottom:6}}>
-        Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
+        Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin ·
+        <b> Espacio</b> pausa · <b>F</b> 2× · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
       </div>
       <div ref={rootRef} />
       {!mounted && <div style={{color:'#99a',fontFamily:'monospace',marginTop:8}}>Cargando…</div>}
