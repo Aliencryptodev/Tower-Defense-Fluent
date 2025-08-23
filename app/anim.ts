@@ -1,37 +1,28 @@
 // app/anim.ts
-// Helpers de animaciones sin tipos de Phaser (SSR-safe)
+// Helpers de animación sin tipos Phaser (compatibles con Vercel/SSR)
+
+export type SceneLike = {
+  textures?: any;
+  anims?: any;
+};
 
 export function listExistingFrames(
-  scene: any,
+  scene: SceneLike,
   atlasKey: string,
   prefix: string,
   maxCheck = 32
 ): string[] {
-  try {
-    const tex = scene?.textures?.get?.(atlasKey);
-    if (!tex) return [];
-
-    const out: string[] = [];
-    for (let i = 1; i <= maxCheck; i++) {
-      const name = `${prefix}_${i}`;
-
-      // Compatibilidad según versión de Phaser
-      const has = typeof tex.hasFrame === 'function'
-        ? tex.hasFrame(name)
-        : typeof tex.getFrame === 'function'
-          ? !!tex.getFrame(name)
-          : false;
-
-      if (has) out.push(name);
-      else break; // paramos al primer hueco
-    }
-    return out;
-  } catch {
-    return [];
+  const out: string[] = [];
+  const tex = scene?.textures?.get?.(atlasKey);
+  for (let i = 1; i <= maxCheck; i++) {
+    const f = `${prefix}_${i}`;
+    if (tex?.has?.(f) || tex?.frames?.[f]) out.push(f);
+    else break;
   }
+  return out;
 }
 
-type RegOpts = {
+type AnimDef = {
   atlas: string;
   key: string;
   prefix: string;
@@ -40,34 +31,26 @@ type RegOpts = {
   repeat?: number;
 };
 
-/**
- * Crea la animación si existen frames con el prefijo dado.
- * Si no hay frames, registra una animación de 1 frame (fallback) para que play() no falle.
- */
-export function registerAnimIfAny(
-  scene: any,
-  { atlas, key, prefix, fallbackFrame, fps = 12, repeat = -1 }: RegOpts
-) {
-  const frames = listExistingFrames(scene, atlas, prefix, 40);
+export function registerAnimIfAny(scene: SceneLike, def: AnimDef): void {
+  if (!scene?.anims) return;
+  if (scene.anims.exists?.(def.key)) return;
 
-  if (frames.length === 0) {
-    if (!scene?.anims?.exists?.(key)) {
-      scene.anims.create({
-        key,
-        frames: [{ key: atlas, frame: fallbackFrame }],
-        frameRate: 1,
-        repeat: 0,
-      });
-    }
-    return;
-  }
+  const frames = listExistingFrames(scene, def.atlas, def.prefix, 48);
 
-  if (!scene?.anims?.exists?.(key)) {
-    scene.anims.create({
-      key,
-      frames: frames.map((f: string) => ({ key: atlas, frame: f })),
-      frameRate: fps,
-      repeat,
+  if (frames.length > 1) {
+    scene.anims.create?.({
+      key: def.key,
+      frames: frames.map((frame: string) => ({ key: def.atlas, frame })),
+      frameRate: def.fps ?? 12,
+      repeat: def.repeat ?? -1,
+    });
+  } else {
+    // Fallback a 1 frame (por si no hay secuencia)
+    scene.anims.create?.({
+      key: def.key,
+      frames: [{ key: def.atlas, frame: def.fallbackFrame }],
+      frameRate: 1,
+      repeat: -1,
     });
   }
 }
