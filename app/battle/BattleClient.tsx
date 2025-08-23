@@ -2,14 +2,14 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 
-// Importar Phaser SOLO en el navegador (evita SSR issues)
+// Importar Phaser solo en cliente
 let PhaserLib: any = null;
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   PhaserLib = require('phaser');
 }
 
-/* ----------------------- Tipos y utilidades básicas ----------------------- */
+/* ----------------------- Tipos y utilidades ----------------------- */
 type MapPoint = { x: number; y: number };
 type MapRect = { x: number; y: number; w: number; h: number };
 type MapDef = {
@@ -75,8 +75,9 @@ function createSceneClass() {
     waveIndex = 0;
     laneToggle = 0;
 
-    enemies!: Phaser.GameObjects.Group;
-    projectiles!: Phaser.GameObjects.Group;
+    // ⚠️ Tipos any para evitar error de compilación con namespace Phaser
+    enemies!: any;
+    projectiles!: any;
     towers: { sprite: any; model: TowerModel; last: number }[] = [];
 
     goldText!: any;
@@ -102,7 +103,7 @@ function createSceneClass() {
     }
 
     async create() {
-      // Inicializar grupos INMEDIATAMENTE para evitar "getChildren of undefined"
+      // ✅ Inicializar grupos ANTES de cualquier await
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
@@ -112,9 +113,9 @@ function createSceneClass() {
       this.map = await loadMapDef(mapName);
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      // UI básica
+      // UI
       this.goldText = this.add.text(16, 16, `🪙 ${this.gold}`, {
-        color: '#ffd76a', fontFamily: 'monospace', fontSize: '18px',
+        color: '#ffd76a', fontFamily: 'monospace', fontSize: '18px'
       }).setDepth(1000);
 
       this.infoText = this.add.text(
@@ -124,17 +125,17 @@ function createSceneClass() {
       ).setDepth(1000);
 
       this.tooltip = this.add.text(0, 0, '', {
-        color: '#e8f4ff', fontFamily: 'monospace', fontSize: '12px', align: 'left',
-        backgroundColor: 'rgba(0,0,0,0.35)',
+        color: '#e8f4ff', fontFamily: 'monospace', fontSize: '12px',
+        backgroundColor: 'rgba(0,0,0,0.35)'
       }).setDepth(1200).setVisible(false);
 
       this.rangeCircle = this.add.circle(0, 0, 50, 0x4cc2ff, 0.12)
         .setStrokeStyle(2, 0x4cc2ff, 0.8).setDepth(200).setVisible(false);
 
-      // Dibuja mapa (terreno + bloqueos)
+      // Mapa
       this.drawMapFromJSON(this.map);
 
-      // Interacción para colocar torres
+      // Colocar torres
       this.input.on('pointerdown', (p: any) => {
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
@@ -344,6 +345,7 @@ function createSceneClass() {
     }
 
     update(time: number, dt: number) {
+      // ✅ Guardas extra para evitar "getChildren of undefined"
       if (!this.ready || !this.enemies || !this.projectiles) return;
 
       this.enemies.getChildren().forEach((e: any) => e?.updateTick?.());
@@ -399,16 +401,8 @@ export default function BattleClient() {
       backgroundColor: '#0c0e12',
       physics: { default: 'arcade' },
       scene: TD,
-      // ✅ Responsivo y centrado
-      scale: {
-        mode: PhaserLib.Scale.FIT,
-        autoCenter: PhaserLib.Scale.CENTER_BOTH,
-      },
-      // ✅ Pixel art nítido al escalar
-      render: {
-        pixelArt: true,
-        antialias: false,
-      },
+      scale: { mode: PhaserLib.Scale.FIT, autoCenter: PhaserLib.Scale.CENTER_BOTH },
+      render: { pixelArt: true, antialias: false },
     };
 
     gameRef.current = new PhaserLib.Game(config);
@@ -428,7 +422,6 @@ export default function BattleClient() {
         Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin ·
         <b> Espacio</b> pausa · <b>F</b> 2× · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
       </div>
-      {/* Dale altura real al contenedor para que el FIT funcione mejor */}
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
       {!mounted && <div style={{ color: '#99a', fontFamily: 'monospace', marginTop: 8 }}>Cargando…</div>}
     </div>
