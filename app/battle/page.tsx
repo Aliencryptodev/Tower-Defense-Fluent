@@ -1,12 +1,13 @@
 // app/battle/page.tsx
-'use client';
+import dynamic from 'next/dynamic';
 
-import NextDynamic from 'next/dynamic';
-
+// Fuerza render dinámico. Con esto ya no se intenta SSG/ISR.
 export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+// (opcional, explícito) desactiva revalidate/caching en este segmento
+export const revalidate = false;
 
-const BattleClient = NextDynamic(() => import('./BattleClient'), { ssr: false });
+// Carga el componente cliente que crea el juego Phaser
+const BattleClient = dynamic(() => import('./BattleClient'), { ssr: false });
 
 export default function Page() {
   return <BattleClient />;
