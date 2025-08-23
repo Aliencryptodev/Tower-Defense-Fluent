@@ -1,13 +1,12 @@
 'use client';
 
-// Importar Phaser SOLO en el navegador (evita "window is not defined" en Vercel)
 let PhaserLib: any = null;
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   PhaserLib = require('phaser');
 }
 
-// ======== Tipos mínimos del mapa (no dependen de Phaser) ========
+// ======== Tipos ========
 type MapPoint = { x:number; y:number };
 type MapRect  = { x:number; y:number; w:number; h:number };
 type MapDef = {
@@ -23,23 +22,15 @@ type MapDef = {
     spawnDelayMs:number; rewardBase:number;
   }
 };
-
 type FamKey = 'electric'|'fire'|'frost';
-
 type TowerModel = {
-  frame:string;
-  fam: FamKey;
-  cost:number;
-  dmg:number;
-  range:number;
-  cd:number;
+  frame:string; fam: FamKey; cost:number; dmg:number; range:number; cd:number;
   projectile:'Lightning Bolt'|'Fireball'|'Ice Shard';
   chain?: { hops:number; falloff:number };
   slow?:  { factor:number; ms:number };
   dot?:   { dps:number; ms:number };
 };
 
-// ======== Modelos de torres ========
 const ELECTRIC: TowerModel[] = [
   { frame:'Arc Coil I',     fam:'electric', cost:45, dmg:18, range:190, cd:700, projectile:'Lightning Bolt', chain:{hops:2,falloff:0.7} },
   { frame:'Tesla Grid III', fam:'electric', cost:85, dmg:30, range:210, cd:620, projectile:'Lightning Bolt', chain:{hops:3,falloff:0.7} },
@@ -55,26 +46,22 @@ const FROST: TowerModel[] = [
   { frame:'Frost Cannon III',   fam:'frost', cost:85, dmg:26, range:200, cd:560, projectile:'Ice Shard', slow:{factor:0.6,ms:1500} },
   { frame:'Absolute Zero V',    fam:'frost', cost:140,dmg:40, range:220, cd:520, projectile:'Ice Shard', slow:{factor:0.5,ms:1800} },
 ];
+const GROUPS: Record<FamKey,TowerModel[]> = { electric:ELECTRIC, fire:FIRE, frost:FROST };
 
-const GROUPS: Record<FamKey,TowerModel[]> = {
-  electric: ELECTRIC,
-  fire: FIRE,
-  frost: FROST,
-};
-
-// util: carga JSON de mapa
 async function loadMapDef(name:string): Promise<MapDef> {
   const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
   if (!res.ok) throw new Error(`map ${name} not found`);
   return res.json();
 }
 
-// ========= Escena (se define usando PhaserLib dentro del runtime del navegador) =========
+// ========= Escena =========
 function createSceneClass() {
   const Phaser = PhaserLib;
 
   return class TD extends Phaser.Scene {
     map!: MapDef;
+    ready = false;
+
     gold = 320;
     waveIndex = 0;
     laneToggle = 0;
@@ -104,24 +91,22 @@ function createSceneClass() {
       this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
     }
 
-    async create() {
-      const url = new URL(window.location.href);
-      const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
-      this.map = await loadMapDef(mapName);
-
+    // ⚠️ NO async: inicializamos todo y cargamos el mapa en una IIFE
+    create() {
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      this.drawMapFromJSON(this.map);
+      // Crear grupos y UI ya, así existen aunque el mapa aún no esté
+      this.enemies = this.add.group();
+      this.projectiles = this.add.group();
 
       this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
       this.infoText = this.add.text(16,34, `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`, { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }).setDepth(1000);
       this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
       this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
 
-      this.enemies = this.add.group();
-      this.projectiles = this.add.group();
-
+      // Handlers: no hacen nada hasta que ready = true
       this.input.on('pointerdown', (p:any)=>{
+        if (!this.ready) return;
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
@@ -138,6 +123,7 @@ function createSceneClass() {
 
         spr.setInteractive({ cursor:'pointer' });
         spr.on('pointerover', ()=>{
+          if (!this.ready) return;
           this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
           const dps = (model.dmg * 1000 / model.cd).toFixed(1);
           this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
@@ -157,7 +143,19 @@ function createSceneClass() {
         if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
       });
 
-      this.setupWavesFromJSON(this.map);
+      // Cargar mapa de forma asíncrona y marcar listo al final
+      (async () => {
+        const url = new URL(window.location.href);
+        const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
+        this.map = await loadMapDef(mapName);
+
+        this.drawMapFromJSON(this.map);
+        this.setupWavesFromJSON(this.map);
+
+        this.ready = true;
+      })().catch(err => {
+        console.error('Error loading map:', err);
+      });
     }
 
     drawMapFromJSON(map:MapDef){
@@ -273,7 +271,7 @@ function createSceneClass() {
         let bestD = 999999;
         this.enemies.getChildren().forEach((c:any)=>{
           if (!c || !c.active || visited.has(c)) return;
-          const d = Phaser.Math.Distance.Between(node.x,node.y,c.x,c.y);
+          const d = PhaserLib.Math.Distance.Between(node.x,node.y,c.x,c.y);
           if (d < 140 && d < bestD) { best=c; bestD=d; }
         });
 
@@ -324,6 +322,8 @@ function createSceneClass() {
     }
 
     update(time:number, dt:number){
+      if (!this.ready) return; // 🔒 Nada hasta que el mapa esté cargado
+
       this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
 
       for (const t of this.towers){
@@ -333,7 +333,7 @@ function createSceneClass() {
         let bestD= 1e9;
         this.enemies.getChildren().forEach((c:any)=>{
           if (!c || !c.active) return;
-          const d = Phaser.Math.Distance.Between(t.sprite.x,t.sprite.y,c.x,c.y);
+          const d = PhaserLib.Math.Distance.Between(t.sprite.x,t.sprite.y,c.x,c.y);
           if (d < t.model.range && d < bestD){ best=c; bestD=d; }
         });
         if (best){
@@ -348,7 +348,7 @@ function createSceneClass() {
         let hit:any = null;
         this.enemies.getChildren().some((e:any)=>{
           if (!e || !e.active) return false;
-          const d = Phaser.Math.Distance.Between(p.x,p.y,e.x,e.y);
+          const d = PhaserLib.Math.Distance.Between(p.x,p.y,e.x,e.y);
           if (d < 18){ hit=e; return true; }
           return false;
         });
@@ -367,7 +367,7 @@ export default function BattleClient(){
   const [mounted,setMounted] = useState(false);
 
   useEffect(()=>{
-    if (!PhaserLib) return; // en SSR no hay Phaser
+    if (!PhaserLib) return;
     setMounted(true);
 
     const TD = createSceneClass();
