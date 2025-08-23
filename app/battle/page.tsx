@@ -1,468 +1,433 @@
 'use client';
+export const dynamic = 'force-dynamic';
 
 import React, { useEffect, useRef, useState } from 'react';
+import * as Phaser from 'phaser';
 
-/** ===== Config general ===== */
-const TILE = 64;
-const W = 1280;
-const H = 720;
-const LANE_Y = 96;
-const LANE_Y2 = 256;
-
-type FamKey = 'electric' | 'fire' | 'frost';
-
-const FAMILY: Record<FamKey, {
-  name: string;
-  projectile: string;
-  fx: string;
-  range: number;
-  cooldownMs: number;
-  baseDamage: number;
-  effects?: Partial<{
-    chain: { jumps: number; radius: number; falloff: number[] };
-    slowPct: number; slowMs: number;
-    burnDps: number; burnMs: number;
-    poisonDps: number; poisonMs: number;
-    critChance: number; critMul: number;
-  }>;
-}> = {
-  electric: {
-    name: 'ELECTRIC',
-    projectile: 'Lightning Bolt',
-    fx: 'Electric Discharge',
-    range: 260,
-    cooldownMs: 360,
-    baseDamage: 18,
-    effects: { chain: { jumps: 2, radius: 180, falloff: [0.6, 0.5] }, critChance: 0.08, critMul: 2.0 }
-  },
-  fire: {
-    name: 'FIRE',
-    projectile: 'Fireball',
-    fx: 'Fire Explosion',
-    range: 220,
-    cooldownMs: 520,
-    baseDamage: 24,
-    effects: { burnDps: 4, burnMs: 1600, critChance: 0.06, critMul: 1.8 }
-  },
-  frost: {
-    name: 'FROST',
-    projectile: 'Ice Shard',
-    fx: 'Ice Explosion',
-    range: 240,
-    cooldownMs: 680,
-    baseDamage: 22,
-    effects: { slowPct: 0.35, slowMs: 1100 }
+type MapPoint = { x:number; y:number };
+type MapRect  = { x:number; y:number; w:number; h:number };
+type MapDef = {
+  name:string;
+  tileSize:number; width:number; height:number;
+  terrain:string; // frame name en terrain_atlas
+  buildMask: MapRect[];
+  paths: MapPoint[][];
+  waves: {
+    baseCount:number; countPerWave:number;
+    baseHP:number; hpPerWave:number;
+    baseSpeed:number; speedPerWave:number;
+    spawnDelayMs:number; rewardBase:number;
   }
 };
 
-const TOWER_FRAMES: Record<FamKey, string[]> = {
-  frost:    ['Ice Shard I', 'Frost Cannon III', 'Absolute Zero V'],
-  fire:     ['Flame Turret I', 'Inferno Core III', 'Phoenix Gate V'],
-  electric: ['Arc Coil I', 'Tesla Grid III', 'Storm Lord V'],
+type FamKey = 'electric'|'fire'|'frost';
+
+type TowerModel = {
+  frame:string;           // frame en atlas "towers"
+  fam: FamKey;            // familia
+  cost:number;
+  dmg:number;
+  range:number;           // px
+  cd:number;              // ms
+  projectile:'Lightning Bolt'|'Fireball'|'Ice Shard';
+  chain?: { hops:number; falloff:number }; // solo electric
+  slow?:  { factor:number; ms:number };    // solo frost
+  dot?:   { dps:number; ms:number };       // solo fire
 };
 
-/** ===== Scene factory (evita tocar Phaser en SSR) ===== */
-function createTD(Phaser: any) {
-  type Tower = {
-    fam: FamKey;
-    s: any;
-    range: number;
-    dmg: number;
-    cdMs: number;
-    lastShot: number;
-  };
+const ELECTRIC: TowerModel[] = [
+  { frame:'Arc Coil I',     fam:'electric', cost:45, dmg:18, range:190, cd:700, projectile:'Lightning Bolt', chain:{hops:2,falloff:0.7} },
+  { frame:'Tesla Grid III', fam:'electric', cost:85, dmg:30, range:210, cd:620, projectile:'Lightning Bolt', chain:{hops:3,falloff:0.7} },
+  { frame:'Storm Lord V',   fam:'electric', cost:140,dmg:48, range:230, cd:540, projectile:'Lightning Bolt', chain:{hops:4,falloff:0.7} },
+];
+const FIRE: TowerModel[] = [
+  { frame:'Flame Turret I',    fam:'fire', cost:45, dmg:14, range:150, cd:600, projectile:'Fireball', dot:{dps:6,ms:1200} },
+  { frame:'Inferno Core III',  fam:'fire', cost:85, dmg:22, range:165, cd:520, projectile:'Fireball', dot:{dps:10,ms:1400} },
+  { frame:'Phoenix Gate V',    fam:'fire', cost:140,dmg:30, range:180, cd:480, projectile:'Fireball', dot:{dps:16,ms:1600} },
+];
+const FROST: TowerModel[] = [
+  { frame:'Ice Shard I',        fam:'frost', cost:45, dmg:16, range:180, cd:640, projectile:'Ice Shard', slow:{factor:0.7,ms:1200} },
+  { frame:'Frost Cannon III',   fam:'frost', cost:85, dmg:26, range:200, cd:560, projectile:'Ice Shard', slow:{factor:0.6,ms:1500} },
+  { frame:'Absolute Zero V',    fam:'frost', cost:140,dmg:40, range:220, cd:520, projectile:'Ice Shard', slow:{factor:0.5,ms:1800} },
+];
 
-  type Enemy = {
-    s: any;
-    barBg?: any;
-    barFg?: any;
-    hp: number;
-    max: number;
-    speed: number;
-    path: { x: number, y: number }[];
-    idx: number;
-    alive: boolean;
-    slowPct?: number; slowUntil?: number;
-    burnDps?: number; burnUntil?: number;
-    poisonDps?: number; poisonUntil?: number;
-  };
+const GROUPS: Record<FamKey,TowerModel[]> = {
+  electric: ELECTRIC,
+  fire: FIRE,
+  frost: FROST,
+};
 
-  return class TD extends Phaser.Scene {
-    towers: Tower[] = [];
-    enemies: Enemy[] = [];
-    bullets: { s: any; vx: number; vy: number; fam: FamKey; dmg: number; target: Enemy | null }[] = [];
-    gold = 100;
-    goldText!: any;
-
-    waveIndex = 0;
-    laneToggle = 0;
-
-    selectedFam: FamKey = 'electric';
-    selectedTierIndex: number = 2;
-
-    uiTop!: any;
-    tooltip!: any;
-    rangeCircle?: any;
-    hoveredTower?: Tower;
-
-    constructor() { super('TD'); }
-
-    preload() {
-      this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
-      this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
-      this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
-      this.load.atlas('castles',   '/assets/castles_atlas.png', '/assets/castles_atlas.json');
-      this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
-      this.load.atlas('enemies40', '/assets/enemies40_atlas.png','/assets/enemies40_atlas.json');
-      this.load.atlas('enemies48', '/assets/enemies48_atlas.png','/assets/enemies48_atlas.json');
-      this.load.atlas('enemies64', '/assets/enemies64_atlas.png','/assets/enemies64_atlas.json');
-      this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
-      this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
-    }
-
-    create() {
-      this.cameras.main.setBackgroundColor('#0b0b0f');
-
-      this.drawLane(LANE_Y);
-      this.drawLane(LANE_Y2);
-
-      this.add.image(24, 24, 'ui32', 'icon_gold').setScrollFactor(0).setDepth(1000).setOrigin(0, 0);
-      this.goldText = this.add.text(64, 20, String(this.gold), { fontFamily: 'monospace', fontSize: '18px', color: '#ffd76a' })
-        .setScrollFactor(0).setDepth(1000);
-
-      this.uiTop = this.add.text(8, 54, '', { fontFamily: 'monospace', fontSize: '14px', color: '#9bd' })
-        .setScrollFactor(0).setDepth(1000);
-
-      this.tooltip = this.add.text(0, 0, '', { fontFamily: 'monospace', fontSize: '12px', color: '#e7f', backgroundColor: 'rgba(0,0,0,0.45)' })
-        .setDepth(1100).setVisible(false);
-
-      type MapPoint = { x:number; y:number }; 
-      type MapRect = { x:number; y:number; w:number; h:number };
-      type MapDef = {
-      name:string; tileSize:number; width:number; height:number;
-      terrain:string; buildMask: MapRect[]; paths: MapPoint[][];
-      waves: { baseCount:number; countPerWave:number; baseHP:number; hpPerWave:number;
-           baseSpeed:number; speedPerWave:number; spawnDelayMs:number; rewardBase:number };
-      };
-
-      async function loadMapDef(name:string): Promise<MapDef> {
-      const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
-      if (!res.ok) throw new Error(`map ${name} not found`);
-      return res.json();
-      }
-
-      
-      this.input.on('pointerdown', (p: any) => {
-        const gx = Math.floor(p.worldX / TILE) * TILE + TILE / 2;
-        const gy = Math.floor(p.worldY / TILE) * TILE + TILE / 2;
-        if (Math.abs(gy - LANE_Y) < TILE / 2 || Math.abs(gy - LANE_Y2) < TILE / 2) return;
-
-        const cost = 45;
-        if (this.gold < cost) return;
-
-        const frame = TOWER_FRAMES[this.selectedFam][this.selectedTierIndex] ?? TOWER_FRAMES[this.selectedFam][0];
-        const s = this.add.image(gx, gy, 'towers', frame).setDepth(500);
-        const fam = this.selectedFam;
-        const cfg = FAMILY[fam];
-
-        const t: Tower = { fam, s, range: cfg.range, dmg: cfg.baseDamage, cdMs: cfg.cooldownMs, lastShot: 0 };
-        this.towers.push(t);
-        this.gold -= cost;
-        this.goldText.setText(String(this.gold));
-      });
-
-      this.input.on('pointermove', (p: any) => {
-        const mx = p.worldX, my = p.worldY;
-        const over = this.towers.find(t => Phaser.Math.Distance.Between(mx, my, t.s.x, t.s.y) <= TILE / 2);
-        if (over) {
-          this.hoveredTower = over;
-          if (!this.rangeCircle) {
-            this.rangeCircle = this.add.circle(over.s.x, over.s.y, over.range, 0x33aaff, 0.12)
-              .setStrokeStyle(2, 0x33aaff, 0.8)
-              .setDepth(300);
-          } else {
-            this.rangeCircle.setPosition(over.s.x, over.s.y).setRadius(over.range).setVisible(true);
-          }
-          const dps = Math.round((1000 / over.cdMs) * over.dmg);
-          this.tooltip.setText(` ${FAMILY[over.fam].name} \n Range ${over.range}  ·  DPS ${dps} `)
-            .setPosition(over.s.x + 20, over.s.y - 10).setVisible(true);
-        } else {
-          this.hoveredTower = undefined;
-          this.rangeCircle?.setVisible(false);
-          this.tooltip.setVisible(false);
-        }
-      });
-
-      this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
-        if (e.key === '1') this.selectedFam = 'electric';
-        if (e.key === '2') this.selectedFam = 'fire';
-        if (e.key === '3') this.selectedFam = 'frost';
-        if (e.key === 'ArrowLeft')  this.selectedTierIndex = (this.selectedTierIndex + TOWER_FRAMES[this.selectedFam].length - 1) % TOWER_FRAMES[this.selectedFam].length;
-        if (e.key === 'ArrowRight') this.selectedTierIndex = (this.selectedTierIndex + 1) % TOWER_FRAMES[this.selectedFam].length;
-      });
-
-      this.time.addEvent({
-        delay: 100,
-        loop: true,
-        callback: () => {
-          const fam = FAMILY[this.selectedFam];
-          const frame = TOWER_FRAMES[this.selectedFam][this.selectedTierIndex];
-          this.uiTop.setText(
-            `Torre ${frame}  —  Coste: 45 oro  —  ${fam.name}\n` +
-            `Rango ${fam.range}  ·  DPS ~${Math.round((1000 / fam.cooldownMs) * fam.baseDamage)}  ·  CD ${fam.cooldownMs}ms`
-          );
-        }
-      });
-
-      this.waveIndex = 0;
-      this.scheduleNextWave();
-    }
-
-    drawLane(y: number) {
-      for (let x = TILE / 2; x < W; x += TILE) {
-        this.add.image(x, y, 'terrain64', 'Grass Path').setDepth(50);
-      }
-    }
-
-    scheduleNextWave() {
-      this.waveIndex++;
-      const count = 10 + this.waveIndex * 2;
-      const hp = 28 + this.waveIndex * 8;
-      const speed = 52 + this.waveIndex * 2;
-
-      const y = (this.laneToggle++ % 2 === 0) ? LANE_Y : LANE_Y2;
-      const path = this.makeStraightPath(y);
-
-      for (let i = 0; i < count; i++) {
-        this.time.delayedCall(i * 600, () => this.spawnEnemy(path, hp, speed));
-      }
-      this.time.delayedCall(count * 600 + 5000, () => this.scheduleNextWave());
-    }
-
-    makeStraightPath(y: number) {
-      const pts: { x: number, y: number }[] = [];
-      for (let x = -TILE; x < W + TILE; x += TILE) pts.push({ x: x + TILE / 2, y });
-      return pts;
-    }
-
-    spawnEnemy(path: { x: number, y: number }[], hp: number, speed: number) {
-      const s = this.add.image(path[0].x, path[0].y, 'enemies32', 'Goblin Scout').setDepth(200);
-      const e: Enemy = { s, hp, max: hp, speed, path, idx: 0, alive: true };
-      e.barBg = this.add.rectangle(s.x, s.y - 18, 28, 5, 0x000000, 0.45).setDepth(400);
-      e.barFg = this.add.rectangle(s.x, s.y - 18, 28, 5, 0x66ff66, 0.9).setDepth(401).setOrigin(0, 0.5).setX(s.x - 14);
-      this.enemies.push(e);
-    }
-
-    update(_: number, dtMs: number) {
-      const dt = dtMs / 1000;
-
-      for (const e of this.enemies) {
-        if (!e.alive) continue;
-        const speedMul = 1 - (e.slowPct && e.slowUntil && this.time.now < e.slowUntil ? e.slowPct : 0);
-        const spd = e.speed * speedMul;
-        const tgt = e.path[Math.min(e.idx + 1, e.path.length - 1)];
-        const dx = tgt.x - e.s.x, dy = tgt.y - e.s.y;
-        const d = Math.hypot(dx, dy);
-        if (d < 2) {
-          if (e.idx < e.path.length - 2) e.idx++;
-          else { e.alive = false; e.s.destroy(); e.barBg?.destroy(); e.barFg?.destroy(); continue; }
-        } else {
-          const nx = (dx / d) * spd * dt;
-          const ny = (dy / d) * spd * dt;
-          e.s.x += nx; e.s.y += ny;
-          e.barBg?.setPosition(e.s.x, e.s.y - 18);
-          e.barFg?.setPosition(e.s.x - 14, e.s.y - 18);
-        }
-
-        if (e.burnDps && e.burnUntil && this.time.now < e.burnUntil) e.hp -= e.burnDps * dt;
-        if (e.poisonDps && e.poisonUntil && this.time.now < e.poisonUntil) e.hp -= e.poisonDps * dt;
-        if (e.hp <= 0 && e.alive) {
-          e.alive = false; e.s.destroy(); e.barBg?.destroy(); e.barFg?.destroy();
-          this.gold += 4 + Math.floor(this.waveIndex / 2);
-          this.goldText.setText(String(this.gold));
-        } else {
-          this.updateHpBar(e);
-        }
-      }
-
-      for (const t of this.towers) {
-        if (this.time.now - t.lastShot < t.cdMs) continue;
-        const target = this.getNearestEnemy(t.s.x, t.s.y, t.range);
-        if (!target) continue;
-        t.lastShot = this.time.now;
-        this.shoot(t, target);
-      }
-
-      for (const b of this.bullets) {
-        b.s.x += b.vx * dt;
-        b.s.y += b.vy * dt;
-        if (b.target && b.target.alive && Phaser.Math.Distance.Between(b.s.x, b.s.y, b.target.s.x, b.target.s.y) < 14) {
-          this.hit(b.target, b.s.x, b.s.y, b.fam, b.dmg);
-          b.s.destroy();
-          b.target = null as any;
-        }
-        if (b.s.x < -50 || b.s.x > W + 50 || b.s.y < -50 || b.s.y > H + 50) b.s.destroy();
-      }
-      this.bullets = this.bullets.filter(b => b.s.active);
-    }
-
-    updateHpBar(e: Enemy) {
-      const pct = Math.max(0, e.hp / e.max);
-      if (e.barFg) e.barFg.width = 28 * pct;
-      if (e.barFg) e.barFg.fillColor = pct > 0.5 ? 0x66ff66 : pct > 0.25 ? 0xffe066 : 0xff6666;
-    }
-
-    getNearestEnemy(x: number, y: number, range: number): Enemy | null {
-      let best: Enemy | null = null, bd = Infinity;
-      for (const e of this.enemies) {
-        if (!e.alive) continue;
-        const d = Phaser.Math.Distance.Between(x, y, e.s.x, e.s.y);
-        if (d <= range && d < bd) { bd = d; best = e; }
-      }
-      return best;
-    }
-
-    shoot(t: Tower, target: Enemy) {
-      const fam = t.fam;
-      const proj = FAMILY[fam].projectile;
-      const angle = Phaser.Math.Angle.Between(t.s.x, t.s.y, target.s.x, target.s.y);
-      const spd = 520;
-      const vx = Math.cos(angle) * spd;
-      const vy = Math.sin(angle) * spd;
-      const s = this.add.image(t.s.x, t.s.y, 'projectiles', proj).setDepth(800);
-      this.bullets.push({ s, vx, vy, fam, dmg: t.dmg, target });
-    }
-
-    hit(target: Enemy, x: number, y: number, fam: FamKey, baseDmg: number) {
-      if (!target.alive) return;
-      let dmg = baseDmg;
-
-      const eff = FAMILY[fam].effects;
-      if (eff?.critChance && Math.random() < eff.critChance) {
-        dmg = Math.round(dmg * (eff.critMul ?? 2.0));
-        this.flashText('CRIT!', x, y - 6, '#ffd76a');
-      }
-
-      this.applyDamageNoChain(target, fam, dmg);
-
-      const fx = this.add.image(x, y, 'fx', FAMILY[fam].fx).setDepth(900);
-      this.time.delayedCall(120, () => fx.destroy());
-
-      if (eff?.chain && target.alive) {
-        this.chainLightning(x, y, target, fam, baseDmg, eff.chain);
-      }
-    }
-
-    chainLightning(
-      x: number,
-      y: number,
-      first: Enemy,
-      fam: FamKey,
-      baseDmg: number,
-      cfg: { jumps: number; radius: number; falloff: number[] }
-    ) {
-      const visited = new Set<Enemy>();
-      visited.add(first);
-
-      const candidates = this.enemies
-        .filter(e => e.alive && !visited.has(e) && Math.hypot(e.s.x - x, e.s.y - y) <= cfg.radius)
-        .sort((a, b) => Math.hypot(a.s.x - x, a.s.y - y) - Math.hypot(b.s.x - x, b.s.y - y));
-
-      const jumps = Math.min(cfg.jumps, candidates.length);
-      for (let j = 0; j < jumps; j++) {
-        const e = candidates[j];
-        visited.add(e);
-        const mul = cfg.falloff[j] ?? 0.5;
-        const dmg = Math.max(1, Math.round(baseDmg * mul));
-
-        const g = this.add.graphics().setDepth(950);
-        g.lineStyle(2, 0xffffaa, 0.85);
-        g.beginPath(); g.moveTo(x, y); g.lineTo(e.s.x, e.s.y); g.strokePath();
-        this.time.delayedCall(100, () => g.destroy());
-
-        this.applyDamageNoChain(e, fam, dmg);
-
-        const fx = this.add.image(e.s.x, e.s.y, 'fx', FAMILY[fam].fx).setDepth(900);
-        this.time.delayedCall(90, () => fx.destroy());
-      }
-    }
-
-    applyDamageNoChain(target: Enemy, fam: FamKey, dmg: number) {
-      if (!target.alive) return;
-
-      const eff = FAMILY[fam].effects;
-      target.hp -= dmg;
-
-      if (eff?.slowPct && eff?.slowMs)   { target.slowPct = Math.max(target.slowPct ?? 0, eff.slowPct); target.slowUntil   = this.time.now + eff.slowMs; }
-      if (eff?.burnDps && eff?.burnMs)   { target.burnDps = eff.burnDps;   target.burnUntil   = this.time.now + eff.burnMs; }
-      if (eff?.poisonDps && eff?.poisonMs) { target.poisonDps = eff.poisonDps; target.poisonUntil = this.time.now + eff.poisonMs; }
-
-      if (target.hp <= 0 && target.alive) {
-        target.alive = false;
-        target.s.destroy();
-        target.barBg?.destroy(); target.barFg?.destroy();
-        const reward = 4 + Math.floor(this.waveIndex / 2);
-        this.gold += reward; this.goldText.setText(String(this.gold));
-      } else {
-        this.updateHpBar(target);
-      }
-    }
-
-    flashText(text: string, x: number, y: number, color = '#fff') {
-      const t = this.add.text(x, y, text, { fontFamily: 'monospace', fontSize: '12px', color })
-        .setDepth(1000).setOrigin(0.5, 1);
-      this.tweens.add({ targets: t, y: y - 12, alpha: 0, duration: 500, onComplete: () => t.destroy() });
-    }
-  };
+// ---------- util de fetch de mapa ----------
+async function loadMapDef(name:string): Promise<MapDef> {
+  const res = await fetch(`/maps/${name}.json`, { cache:'no-store' });
+  if (!res.ok) throw new Error(`map ${name} not found`);
+  return res.json();
 }
 
-/** ===== Componente /battle ===== */
-export default function BattlePage() {
-  const ref = useRef<HTMLDivElement>(null);
-  const gameRef = useRef<any>(null);
-  const [mounted, setMounted] = useState(false);
+class TD extends Phaser.Scene {
+  map!: MapDef;
+  gold = 320;
+  waveIndex = 0;
+  laneToggle = 0;
 
-  useEffect(() => {
+  // phaser groups
+  enemies!: Phaser.GameObjects.Group;
+  projectiles!: Phaser.GameObjects.Group;
+  towers: { sprite:Phaser.GameObjects.Image; model:TowerModel; last:number }[] = [];
+
+  // ui
+  goldText!: Phaser.GameObjects.Text;
+  infoText!: Phaser.GameObjects.Text;
+  tooltip!: Phaser.GameObjects.Text;
+  rangeCircle!: Phaser.GameObjects.Arc;
+
+  // build control
+  selFam: FamKey = 'electric';
+  selIdx = 0;
+  blockedTiles = new Set<string>(); // (x,y) de path para impedir colocar
+
+  // helpers
+  worldToTile(x:number,y:number){ return { tx:Math.floor(x/this.map.tileSize), ty:Math.floor(y/this.map.tileSize) }; }
+  tileKey(tx:number,ty:number){ return `${tx},${ty}`; }
+
+  preload() {
+    // atlases
+    this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
+    this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
+    this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
+    this.load.atlas('enemies32', '/assets/enemies32_atlas.png','/assets/enemies32_atlas.json');
+    this.load.atlas('projectiles','/assets/projectiles_atlas.png','/assets/projectiles_atlas.json');
+    this.load.atlas('fx',        '/assets/effects_atlas.png', '/assets/effects_atlas.json');
+  }
+
+  async create() {
+    // Mapa por JSON (query ?map=nombre o 'grass_dual')
+    const url = new URL(window.location.href);
+    const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi,'');
+    this.map = await loadMapDef(mapName);
+
+    this.cameras.main.setBackgroundColor('#0c0e12');
+
+    // Dibuja paths y construye "blockedTiles"
+    this.drawMapFromJSON(this.map);
+
+    // UI
+    this.goldText = this.add.text(16,16, `🪙 ${this.gold}`, { color:'#ffd76a', fontFamily:'monospace', fontSize:'18px' }).setDepth(1000);
+    this.infoText = this.add.text(16,34, `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · pasa el mouse sobre una torre para ver DPS/Range`, { color:'#b7c7ff', fontFamily:'monospace', fontSize:'12px' }).setDepth(1000);
+    this.tooltip = this.add.text(0,0,'',{ color:'#e8f4ff', fontFamily:'monospace', fontSize:'12px', align:'left', backgroundColor:'rgba(0,0,0,0.35)' }).setDepth(1200).setVisible(false);
+    this.rangeCircle = this.add.circle(0,0, 50, 0x4cc2ff, 0.12).setStrokeStyle(2,0x4cc2ff,0.8).setDepth(200).setVisible(false);
+
+    // grupos
+    this.enemies = this.add.group();
+    this.projectiles = this.add.group();
+
+    // input ratón (colocar)
+    this.input.on('pointerdown', (p:Phaser.Input.Pointer)=>{
+      const model = GROUPS[this.selFam][this.selIdx];
+      const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
+      if (tx<0 || ty<0 || tx>=this.map.width || ty>=this.map.height) return;
+      if (this.blockedTiles.has(this.tileKey(tx,ty))) return;
+      if (this.gold < model.cost) return;
+
+      this.gold -= model.cost;
+      this.goldText.setText(`🪙 ${this.gold}`);
+
+      const x = tx*this.map.tileSize + this.map.tileSize/2;
+      const y = ty*this.map.tileSize + this.map.tileSize/2;
+      const spr = this.add.image(x,y,'towers', model.frame).setDepth(300);
+      this.towers.push({ sprite:spr, model, last:0 });
+
+      spr.setInteractive({ cursor:'pointer' });
+      spr.on('pointerover', ()=>{
+        this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
+        const dps = (model.dmg * 1000 / model.cd).toFixed(1);
+        this.tooltip.setVisible(true).setPosition(spr.x+18, spr.y-18)
+          .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
+      });
+      spr.on('pointerout', ()=>{
+        this.rangeCircle.setVisible(false);
+        this.tooltip.setVisible(false);
+      });
+    });
+
+    // teclado
+    window.addEventListener('keydown', (e)=>{
+      if (e.key==='1') { this.selFam='electric'; this.selIdx=0; }
+      if (e.key==='2') { this.selFam='fire';     this.selIdx=0; }
+      if (e.key==='3') { this.selFam='frost';    this.selIdx=0; }
+      if (e.key==='ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
+      if (e.key==='ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+    });
+
+    // oleadas
+    this.setupWavesFromJSON(this.map);
+  }
+
+  drawMapFromJSON(map:MapDef){
+    // pre-marca path tiles como bloqueadas para construcción
+    const mark = (x:number,y:number)=> this.blockedTiles.add(this.tileKey(x,y));
+
+    // pinto un “suelo vacío” oscuro (opcional)
+    // this.add.rectangle(0,0,this.scale.width,this.scale.height,0x0c0e12,1).setOrigin(0,0);
+
+    // Dibujo los tiles de path según frame "terrain"
+    for (const lane of map.paths) {
+      for (const p of lane) {
+        if (p.x>=0 && p.x<map.width && p.y>=0 && p.y<map.height) {
+          const cx = p.x*map.tileSize + map.tileSize/2;
+          const cy = p.y*map.tileSize + map.tileSize/2;
+          this.add.image(cx,cy,'terrain64', map.terrain).setDepth(50);
+          mark(p.x,p.y);
+        }
+      }
+    }
+
+    // Si quieres bloquear zonas adicionales (buildMask)
+    for (const r of map.buildMask) {
+      for (let x=r.x; x<r.x+r.w; x++)
+      for (let y=r.y; y<r.y+r.h; y++) mark(x,y);
+    }
+  }
+
+  setupWavesFromJSON(map:MapDef){
+    this.waveIndex = 0;
+    const next = () => {
+      this.waveIndex++;
+      const W = map.waves;
+      const count = W.baseCount + this.waveIndex*W.countPerWave;
+      const hp    = W.baseHP    + this.waveIndex*W.hpPerWave;
+      const speed = W.baseSpeed + this.waveIndex*W.speedPerWave;
+
+      // alterna carril
+      const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
+      const pathTiles = map.paths[pathIdx];
+      const pathWorld = pathTiles.map(pt => ({
+        x: pt.x*map.tileSize + map.tileSize/2,
+        y: pt.y*map.tileSize + map.tileSize/2
+      }));
+
+      for (let i=0;i<count;i++){
+        this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(pathWorld, hp, speed));
+      }
+
+      // cada 3 oleadas, lanza también el otro carril a la vez (pico de dificultad)
+      if (this.waveIndex % 3 === 0) {
+        const other = map.paths[pathIdx?0:1].map(pt=>({
+          x: pt.x*map.tileSize + map.tileSize/2,
+          y: pt.y*map.tileSize + map.tileSize/2
+        }));
+        for (let i=0;i<Math.floor(count*0.7);i++){
+          this.time.delayedCall(i*W.spawnDelayMs, ()=> this.spawnEnemy(other, Math.floor(hp*0.9), speed));
+        }
+      }
+
+      // próxima wave
+      this.time.delayedCall(count*W.spawnDelayMs + 5500, next);
+    };
+    next();
+  }
+
+  spawnEnemy(path:{x:number;y:number}[], hp:number, speed:number){
+    const start = path[0];
+    const e = this.add.image(start.x, start.y, 'enemies32', 'Goblin Scout').setDepth(120);
+    this.enemies.add(e);
+    (e as any).hp = hp;
+    (e as any).maxhp = hp;
+    (e as any).speed = speed;
+    (e as any).pathIndex = 1;
+
+    // barra simple
+    const bar = this.add.rectangle(e.x, e.y-18, 24, 3, 0x57ff57).setOrigin(0.5,0.5).setDepth(121);
+    (e as any).hpbar = bar;
+
+    (e as any).updateTick = ()=>{
+      const i = (e as any).pathIndex;
+      if (i >= path.length) {
+        // llegó al final – penalización?
+        e.destroy(); bar.destroy();
+        return;
+      }
+      const target = path[i];
+      const dx = target.x - e.x, dy = target.y - e.y;
+      const dist = Math.hypot(dx,dy);
+      const spd = (e as any).speed * (1/60);
+      if (dist <= spd) {
+        e.setPosition(target.x, target.y);
+        (e as any).pathIndex++;
+      } else {
+        e.setPosition(e.x + (dx/dist)*spd, e.y + (dy/dist)*spd);
+      }
+      // hp bar
+      const ratio = Math.max(0, (e as any).hp / (e as any).maxhp);
+      bar.setPosition(e.x, e.y-18).setScale(ratio,1);
+    };
+  }
+
+  // ---- PROYECTIL + HIT ----
+  fireAt(t: {sprite:Phaser.GameObjects.Image; model:TowerModel}, target:Phaser.GameObjects.Image){
+    const m = t.model;
+    const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', m.projectile).setDepth(200);
+    this.projectiles.add(p);
+    (p as any).vx = (target.x - p.x);
+    (p as any).vy = (target.y - p.y);
+    const len = Math.hypot((p as any).vx,(p as any).vy) || 1;
+    const speed = 520;
+    (p as any).vx = (p as any).vx / len * speed * (1/60);
+    (p as any).vy = (p as any).vy / len * speed * (1/60);
+    (p as any).dmg = m.dmg;
+    (p as any).fam = m.fam;
+    (p as any).slow = m.slow;
+    (p as any).dot  = m.dot;
+    (p as any).chain= m.chain;
+    (p as any).ttl = 900; // ms
+  }
+
+  chainLightning(origin:Phaser.GameObjects.Image, baseDmg:number, hops:number, falloff:number){
+    // encadenado sin recursión: BFS pequeño con conjunto visitado
+    const visited = new Set<Phaser.GameObjects.Image>();
+    const queue:{ node:Phaser.GameObjects.Image; dmg:number; depth:number }[] = [];
+    visited.add(origin);
+    queue.push({ node: origin, dmg: baseDmg, depth: 0 });
+
+    while (queue.length){
+      const { node, dmg, depth } = queue.shift()!;
+      if (depth>=hops) continue;
+
+      // encuentra el enemigo más cercano no visitado
+      let best:Phaser.GameObjects.Image|null = null;
+      let bestD = 999999;
+      this.enemies.getChildren().forEach((c:any)=>{
+        if (!c || !c.active || visited.has(c)) return;
+        const d = Phaser.Math.Distance.Between(node.x,node.y,c.x,c.y);
+        if (d < 140 && d < bestD) { best=c; bestD=d; }
+      });
+
+      if (best){
+        // rayo visual (opcional)
+        const g = this.add.graphics().setDepth(220);
+        g.lineStyle(2,0x9ad0ff,0.85);
+        g.beginPath(); g.moveTo(node.x,node.y); g.lineTo(best.x,best.y); g.strokePath();
+        this.time.delayedCall(80, ()=> g.destroy());
+
+        // daño
+        (best as any).hp -= Math.max(1, Math.round(dmg));
+        visited.add(best);
+
+        // siguiente salto
+        queue.push({ node:best, dmg: dmg*falloff, depth: depth+1 });
+      }
+    }
+  }
+
+  doHit(proj:Phaser.GameObjects.Image, enemy:Phaser.GameObjects.Image){
+    const p:any = proj; const e:any = enemy;
+    e.hp -= p.dmg;
+
+    // efectos
+    if (p.fam==='frost' && p.slow){
+      const old = e.speed;
+      e.speed = old * p.slow.factor;
+      this.time.delayedCall(p.slow.ms, ()=> e && (e.speed = old));
+    }
+    if (p.fam==='fire' && p.dot){
+      const ticks = Math.floor(p.dot.ms/300);
+      for (let i=1;i<=ticks;i++){
+        this.time.delayedCall(i*300, ()=> e && (e.hp -= Math.round(p.dot.dps*0.3)));
+      }
+    }
+    if (p.fam==='electric' && p.chain){
+      this.chainLightning(enemy, p.dmg, p.chain.hops, p.chain.falloff);
+    }
+
+    // muerte
+    if (e.hp <= 0){
+      // efecto simple
+      const puff = this.add.image(e.x,e.y,'fx','Poison Cloud').setDepth(210);
+      this.time.delayedCall(220, ()=> puff.destroy());
+
+      e.hpbar?.destroy();
+      e.destroy();
+      this.gold += 6 + Math.floor(this.waveIndex*0.6);
+      this.goldText.setText(`🪙 ${this.gold}`);
+    }
+
+    proj.destroy();
+  }
+
+  update(time:number, dt:number){
+    // enemigos
+    this.enemies.getChildren().forEach((e:any)=> e?.updateTick?.());
+
+    // torres
+    for (const t of this.towers){
+      if (time < t.last + t.model.cd) continue;
+
+      // busca objetivo más cercano dentro de rango
+      let best:Phaser.GameObjects.Image|null = null;
+      let bestD= 1e9;
+      this.enemies.getChildren().forEach((c:any)=>{
+        if (!c || !c.active) return;
+        const d = Phaser.Math.Distance.Between(t.sprite.x,t.sprite.y,c.x,c.y);
+        if (d < t.model.range && d < bestD){ best=c; bestD=d; }
+      });
+      if (best){
+        t.last = time;
+        this.fireAt(t, best);
+      }
+    }
+
+    // proyectiles
+    this.projectiles.getChildren().forEach((p:any)=>{
+      p.x += p.vx; p.y += p.vy; p.ttl -= dt;
+      if (p.ttl<=0){ p.destroy(); return; }
+      // colisión AABB simple
+      let hit:Phaser.GameObjects.Image|null = null;
+      this.enemies.getChildren().some((e:any)=>{
+        if (!e || !e.active) return false;
+        const d = Phaser.Math.Distance.Between(p.x,p.y,e.x,e.y);
+        if (d < 18){ hit=e; return true; }
+        return false;
+      });
+      if (hit) this.doHit(p, hit);
+    });
+  }
+}
+
+export default function BattlePage(){
+  const rootRef = useRef<HTMLDivElement>(null);
+  const gameRef = useRef<Phaser.Game|null>(null);
+  const [mounted,setMounted] = useState(false);
+
+  useEffect(()=>{
     setMounted(true);
-    if (!ref.current || gameRef.current) return;
+    const w = 1180; const h = 680;
 
-    (async () => {
-      // Import dinámico seguro en SSR
-      const mod = await import('phaser');
-      const Phaser: any = (mod as any).default ?? mod;
+    const config: Phaser.Types.Core.GameConfig = {
+      type: Phaser.AUTO,
+      width: w,
+      height: h,
+      parent: rootRef.current || undefined,
+      backgroundColor: '#0c0e12',
+      physics: { default: 'arcade' },
+      scene: TD,
+    };
 
-      // Creamos la Scene sin tocar Phaser en top-level
-      const TD = createTD(Phaser);
+    gameRef.current = new Phaser.Game(config);
 
-      const config: any = {
-        type: Phaser.AUTO,
-        width: W,
-        height: H,
-        parent: ref.current,
-        backgroundColor: '#0b0b0f',
-        scene: [TD],
-        physics: { default: 'arcade' },
-        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }
-      };
-
-      gameRef.current = new Phaser.Game(config);
-    })();
-
-    return () => {
-      try { gameRef.current?.destroy(true); } catch {}
+    return ()=> {
+      gameRef.current?.destroy(true);
       gameRef.current = null;
     };
-  }, []);
+  },[]);
 
   return (
-    <div style={{ padding: 12 }}>
-      <h2 style={{ fontFamily: 'monospace', margin: '6px 0' }}>Fluent Tower Defense — MVP</h2>
-      <div style={{ fontFamily: 'monospace', fontSize: 13, opacity: 0.8, marginBottom: 8 }}>
-        Click para colocar · 1=⚡ Electric / 2=🔥 Fire / 3=❄️ Frost · ←/→ cambia skin ·
-        pasa el mouse sobre una torre para ver <b>DPS/Range</b>
+    <div style={{padding:'8px'}}>
+      <h3 style={{color:'#e8f4ff',fontFamily:'monospace',margin:'4px 0'}}>Fluent Tower Defense — MVP</h3>
+      <div style={{color:'#a9b7ff',fontFamily:'monospace',fontSize:12,marginBottom:6}}>
+        Click para colocar · <b>1</b>=⚡ Electric / <b>2</b>=🔥 Fire / <b>3</b>=❄ Frost · <b>←/→</b> cambia skin · pasa el mouse sobre una torre para ver <b>DPS/Range</b>
       </div>
-      <div ref={ref} />
-      {!mounted && <p style={{ fontFamily: 'monospace' }}>Cargando…</p>}
+      <div ref={rootRef} />
+      {!mounted && <div style={{color:'#99a',fontFamily:'monospace',marginTop:8}}>Cargando…</div>}
     </div>
   );
 }
