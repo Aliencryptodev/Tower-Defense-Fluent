@@ -1,6 +1,6 @@
 'use client';
+export const revalidate = false;      
 export const dynamic = 'force-dynamic';
-export const revalidate = 0;
 
 // Importar Phaser SOLO en el navegador (evita "window is not defined" en Vercel)
 let PhaserLib: any = null;
