@@ -4,11 +4,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import Phaser from 'phaser';
 
 /** ---- Config general ---- */
-const TILE = 64;                     // tamaño de casilla
-const W = 1280;                      // ancho del canvas
-const H = 720;                       // alto del canvas
-const LANE_Y = 96;                   // y de la primera fila de camino
-const LANE_Y2 = 256;                 // y de la segunda fila de camino
+const TILE = 64;
+const W = 1280;
+const H = 720;
+const LANE_Y = 96;
+const LANE_Y2 = 256;
 
 /** Familias/tipos de torre que mostraremos con las teclas 1–3 */
 type FamKey = 'electric' | 'fire' | 'frost';
@@ -20,11 +20,8 @@ const FAMILY: Record<FamKey, {
   range: number;
   cooldownMs: number;
   baseDamage: number;
-  /** Efectos opcionales */
   effects?: Partial<{
-    // chain lightning
-    chain: { jumps: number; radius: number; falloff: number[] };
-    // estados
+    chain: { jumps: number; radius: number; falloff: number[] }; // solo electric
     slowPct: number; slowMs: number;
     burnDps: number; burnMs: number;
     poisonDps: number; poisonMs: number;
@@ -94,7 +91,6 @@ type Enemy = {
   path: { x: number, y: number }[];
   idx: number;
   alive: boolean;
-  // estados
   slowPct?: number; slowUntil?: number;
   burnDps?: number; burnUntil?: number;
   poisonDps?: number; poisonUntil?: number;
@@ -112,7 +108,7 @@ class TD extends Phaser.Scene {
   laneToggle = 0;
 
   selectedFam: FamKey = 'electric';
-  selectedTierIndex: number = 2; // por defecto el 3º frame (más vistoso)
+  selectedTierIndex: number = 2; // skin vistosa por defecto
 
   uiTop!: Phaser.GameObjects.Text;
   tooltip!: Phaser.GameObjects.Text;
@@ -122,7 +118,6 @@ class TD extends Phaser.Scene {
   constructor() { super('TD'); }
 
   preload() {
-    // Carga de atlas (ya generados por el empaquetador)
     this.load.atlas('terrain64', '/assets/terrain_atlas.png', '/assets/terrain_atlas.json');
     this.load.atlas('ui32',      '/assets/ui_atlas.png',      '/assets/ui_atlas.json');
     this.load.atlas('towers',    '/assets/towers_atlas.png',  '/assets/towers_atlas.json');
@@ -138,11 +133,9 @@ class TD extends Phaser.Scene {
   create() {
     this.cameras.main.setBackgroundColor('#0b0b0f');
 
-    // Dibuja 2 caminos simples de césped
     this.drawLane(LANE_Y);
     this.drawLane(LANE_Y2);
 
-    // HUD básico
     this.add.image(24, 24, 'ui32', 'icon_gold').setScrollFactor(0).setDepth(1000).setOrigin(0, 0);
     this.goldText = this.add.text(64, 20, String(this.gold), { fontFamily: 'monospace', fontSize: '18px', color: '#ffd76a' })
       .setScrollFactor(0).setDepth(1000);
@@ -153,19 +146,14 @@ class TD extends Phaser.Scene {
     this.tooltip = this.add.text(0, 0, '', { fontFamily: 'monospace', fontSize: '12px', color: '#e7f', backgroundColor: 'rgba(0,0,0,0.45)' })
       .setDepth(1100).setVisible(false);
 
-    // Input: click para colocar torre
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       const gx = Math.floor(p.worldX / TILE) * TILE + TILE / 2;
       const gy = Math.floor(p.worldY / TILE) * TILE + TILE / 2;
-
-      // evita colocar en el camino (dos filas)
       if (Math.abs(gy - LANE_Y) < TILE / 2 || Math.abs(gy - LANE_Y2) < TILE / 2) return;
 
-      // coste simple
       const cost = 45;
       if (this.gold < cost) return;
 
-      // frame de torre
       const frame = TOWER_FRAMES[this.selectedFam][this.selectedTierIndex] ?? TOWER_FRAMES[this.selectedFam][0];
       const s = this.add.image(gx, gy, 'towers', frame).setDepth(500);
       const fam = this.selectedFam;
@@ -184,7 +172,6 @@ class TD extends Phaser.Scene {
       this.goldText.setText(String(this.gold));
     });
 
-    // Hover UI para mostrar DPS/Range
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       const mx = p.worldX, my = p.worldY;
       const over = this.towers.find(t => Phaser.Math.Distance.Between(mx, my, t.s.x, t.s.y) <= TILE / 2);
@@ -207,7 +194,6 @@ class TD extends Phaser.Scene {
       }
     });
 
-    // Teclado: 1–3 cambia familia. Flechas izquierda/derecha cambian skin (tier)
     this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
       if (e.key === '1') this.selectedFam = 'electric';
       if (e.key === '2') this.selectedFam = 'fire';
@@ -216,7 +202,6 @@ class TD extends Phaser.Scene {
       if (e.key === 'ArrowRight') this.selectedTierIndex = (this.selectedTierIndex + 1) % TOWER_FRAMES[this.selectedFam].length;
     });
 
-    // UI info selección
     this.time.addEvent({
       delay: 100,
       loop: true,
@@ -230,7 +215,6 @@ class TD extends Phaser.Scene {
       }
     });
 
-    // Empezamos waves
     this.waveIndex = 0;
     this.scheduleNextWave();
   }
@@ -244,21 +228,17 @@ class TD extends Phaser.Scene {
   scheduleNextWave() {
     this.waveIndex++;
     const now = this.time.now;
-    // dificultad simple: +enemigos y +vida con waves
     const count = 10 + this.waveIndex * 2;
     const hp = 28 + this.waveIndex * 8;
     const speed = 52 + this.waveIndex * 2;
 
-    // alterna camino superior/inferior
     const y = (this.laneToggle++ % 2 === 0) ? LANE_Y : LANE_Y2;
     const path = this.makeStraightPath(y);
 
-    // spawnea uno cada 600ms
     for (let i = 0; i < count; i++) {
       this.time.delayedCall(i * 600, () => this.spawnEnemy(path, hp, speed));
     }
 
-    // programa la siguiente wave
     this.nextSpawnAt = now + count * 600 + 5000;
     this.time.delayedCall(count * 600 + 5000, () => this.scheduleNextWave());
   }
@@ -280,7 +260,6 @@ class TD extends Phaser.Scene {
   update(time: number, dtMs: number) {
     const dt = dtMs / 1000;
 
-    // mover enemigos
     for (const e of this.enemies) {
       if (!e.alive) continue;
       const speedMul = 1 - (e.slowPct && e.slowUntil && this.time.now < e.slowUntil ? e.slowPct : 0);
@@ -290,11 +269,7 @@ class TD extends Phaser.Scene {
       const d = Math.hypot(dx, dy);
       if (d < 2) {
         if (e.idx < e.path.length - 2) e.idx++;
-        else { // llegó al final
-          e.alive = false;
-          e.s.destroy(); e.barBg?.destroy(); e.barFg?.destroy();
-          continue;
-        }
+        else { e.alive = false; e.s.destroy(); e.barBg?.destroy(); e.barFg?.destroy(); continue; }
       } else {
         const nx = (dx / d) * spd * dt;
         const ny = (dy / d) * spd * dt;
@@ -303,13 +278,8 @@ class TD extends Phaser.Scene {
         e.barFg?.setPosition(e.s.x - 14, e.s.y - 18);
       }
 
-      // DoT burn/poison
-      if (e.burnDps && e.burnUntil && this.time.now < e.burnUntil) {
-        e.hp -= e.burnDps * dt;
-      }
-      if (e.poisonDps && e.poisonUntil && this.time.now < e.poisonUntil) {
-        e.hp -= e.poisonDps * dt;
-      }
+      if (e.burnDps && e.burnUntil && this.time.now < e.burnUntil) e.hp -= e.burnDps * dt;
+      if (e.poisonDps && e.poisonUntil && this.time.now < e.poisonUntil) e.hp -= e.poisonDps * dt;
       if (e.hp <= 0 && e.alive) {
         e.alive = false; e.s.destroy(); e.barBg?.destroy(); e.barFg?.destroy();
         this.gold += 4 + Math.floor(this.waveIndex / 2);
@@ -319,7 +289,6 @@ class TD extends Phaser.Scene {
       }
     }
 
-    // disparo torres
     for (const t of this.towers) {
       if (time - t.lastShot < t.cdMs) continue;
       const target = this.getNearestEnemy(t.s.x, t.s.y, t.range);
@@ -328,21 +297,16 @@ class TD extends Phaser.Scene {
       this.shoot(t, target);
     }
 
-    // mover proyectiles
     for (const b of this.bullets) {
       b.s.x += b.vx * dt;
       b.s.y += b.vy * dt;
       if (b.target && b.target.alive && Phaser.Math.Distance.Between(b.s.x, b.s.y, b.target.s.x, b.target.s.y) < 14) {
-        this.hit(b.target, b.s.x, b.s.y, b.fam, b.dmg, /*allowChain=*/true);
+        this.hit(b.target, b.s.x, b.s.y, b.fam, b.dmg);
         b.s.destroy();
         b.target = null as any;
       }
-      // fuera de límites
-      if (b.s.x < -50 || b.s.x > W + 50 || b.s.y < -50 || b.s.y > H + 50) {
-        b.s.destroy();
-      }
+      if (b.s.x < -50 || b.s.x > W + 50 || b.s.y < -50 || b.s.y > H + 50) b.s.destroy();
     }
-    // limpia proyectiles destruidos
     this.bullets = this.bullets.filter(b => b.s.active);
   }
 
@@ -373,15 +337,8 @@ class TD extends Phaser.Scene {
     this.bullets.push({ s, vx, vy, fam, dmg: t.dmg, target });
   }
 
-  /** Impacto + estados + fx + (opcional) encadenado */
-  hit(
-    target: Enemy,
-    x: number,
-    y: number,
-    fam: FamKey,
-    baseDmg: number,
-    allowChain: boolean = true     // ⬅️ evita recursión en rebotes
-  ) {
+  /** Impacto principal (sin riesgo de recursión) */
+  hit(target: Enemy, x: number, y: number, fam: FamKey, baseDmg: number) {
     if (!target.alive) return;
     let dmg = baseDmg;
 
@@ -391,32 +348,20 @@ class TD extends Phaser.Scene {
       this.flashText('CRIT!', x, y - 6, '#ffd76a');
     }
 
-    target.hp -= dmg;
+    // Aplica daño/estados al objetivo principal
+    this.applyDamageNoChain(target, fam, dmg);
 
-    // estados
-    if (eff?.slowPct && eff?.slowMs)   { target.slowPct = Math.max(target.slowPct ?? 0, eff.slowPct); target.slowUntil   = this.time.now + eff.slowMs; }
-    if (eff?.burnDps && eff?.burnMs)   { target.burnDps = eff.burnDps;   target.burnUntil   = this.time.now + eff.burnMs; }
-    if (eff?.poisonDps && eff?.poisonMs) { target.poisonDps = eff.poisonDps; target.poisonUntil = this.time.now + eff.poisonMs; }
-
+    // FX del impacto
     const fx = this.add.image(x, y, 'fx', FAMILY[fam].fx).setDepth(900);
     this.time.delayedCall(120, () => fx.destroy());
 
-    // ⚡ chain lightning: solo en el PRIMER impacto
-    if (allowChain && eff?.chain && target.alive) {
+    // ⚡ Chain lightning: rebotes SIN llamar a hit()
+    if (eff?.chain && target.alive) {
       this.chainLightning(x, y, target, fam, baseDmg, eff.chain);
-    }
-
-    if (target.hp <= 0 && target.alive) {
-      target.alive = false; target.s.destroy();
-      target.barBg?.destroy(); target.barFg?.destroy();
-      const reward = 4 + Math.floor(this.waveIndex / 2);
-      this.gold += reward; this.goldText.setText(String(this.gold));
-    } else {
-      this.updateHpBar(target);
     }
   }
 
-  /** Rebotes del rayo: sin re-encadenar (no recursión) */
+  /** Rebotes del rayo: aplica daño directo sin re-encadenar y sin llamar a hit() */
   chainLightning(
     x: number,
     y: number,
@@ -425,24 +370,55 @@ class TD extends Phaser.Scene {
     baseDmg: number,
     cfg: { jumps: number; radius: number; falloff: number[] }
   ) {
+    const visited = new Set<Enemy>();
+    visited.add(first);
+
+    // candidatos ordenados por distancia al punto de impacto
     const candidates = this.enemies
-      .filter(e => e.alive && e !== first && Math.hypot(e.s.x - x, e.s.y - y) <= cfg.radius)
+      .filter(e => e.alive && !visited.has(e) && Math.hypot(e.s.x - x, e.s.y - y) <= cfg.radius)
       .sort((a, b) => Math.hypot(a.s.x - x, a.s.y - y) - Math.hypot(b.s.x - x, b.s.y - y));
 
     const jumps = Math.min(cfg.jumps, candidates.length);
     for (let j = 0; j < jumps; j++) {
       const e = candidates[j];
+      visited.add(e);
       const mul = cfg.falloff[j] ?? 0.5;
       const dmg = Math.max(1, Math.round(baseDmg * mul));
 
       // rayo visual
       const g = this.add.graphics().setDepth(950);
-      g.lineStyle(2, 0xffffaa, 0.8);
+      g.lineStyle(2, 0xffffaa, 0.85);
       g.beginPath(); g.moveTo(x, y); g.lineTo(e.s.x, e.s.y); g.strokePath();
       this.time.delayedCall(100, () => g.destroy());
 
-      // rebote sin permitir más encadenado
-      this.hit(e, e.s.x, e.s.y, fam, dmg, /*allowChain=*/false);
+      // daño sin posibilidad de re-encadenar
+      this.applyDamageNoChain(e, fam, dmg);
+
+      // pequeño destello en el objetivo del rebote
+      const fx = this.add.image(e.s.x, e.s.y, 'fx', FAMILY[fam].fx).setDepth(900);
+      this.time.delayedCall(90, () => fx.destroy());
+    }
+  }
+
+  /** Aplica daño/estados/kill/recompensa sin invocar chainLightning */
+  applyDamageNoChain(target: Enemy, fam: FamKey, dmg: number) {
+    if (!target.alive) return;
+
+    const eff = FAMILY[fam].effects;
+    target.hp -= dmg;
+
+    if (eff?.slowPct && eff?.slowMs)   { target.slowPct = Math.max(target.slowPct ?? 0, eff.slowPct); target.slowUntil   = this.time.now + eff.slowMs; }
+    if (eff?.burnDps && eff?.burnMs)   { target.burnDps = eff.burnDps;   target.burnUntil   = this.time.now + eff.burnMs; }
+    if (eff?.poisonDps && eff?.poisonMs) { target.poisonDps = eff.poisonDps; target.poisonUntil = this.time.now + eff.poisonMs; }
+
+    if (target.hp <= 0 && target.alive) {
+      target.alive = false;
+      target.s.destroy();
+      target.barBg?.destroy(); target.barFg?.destroy();
+      const reward = 4 + Math.floor(this.waveIndex / 2);
+      this.gold += reward; this.goldText.setText(String(this.gold));
+    } else {
+      this.updateHpBar(target);
     }
   }
 
