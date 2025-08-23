@@ -75,7 +75,7 @@ function createSceneClass() {
     waveIndex = 0;
     laneToggle = 0;
 
-    // ⚠️ Tipos any para evitar error de compilación con namespace Phaser
+    // Tipos any para evitar error de compilación con namespace Phaser en Vercel
     enemies!: any;
     projectiles!: any;
     towers: { sprite: any; model: TowerModel; last: number }[] = [];
@@ -90,6 +90,10 @@ function createSceneClass() {
     blockedTiles = new Set<string>();
     ready = false;
 
+    // Pausa
+    paused = false;
+    pauseText!: any;
+
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
 
@@ -103,7 +107,7 @@ function createSceneClass() {
     }
 
     async create() {
-      // ✅ Inicializar grupos ANTES de cualquier await
+      // Inicializar grupos ANTES de cualquier await (evita getChildren undefined)
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
@@ -120,7 +124,7 @@ function createSceneClass() {
 
       this.infoText = this.add.text(
         16, 34,
-        `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost  · ←/→ cambia skin · Espacio pausa · F 2x · pasa el mouse sobre una torre para ver DPS/Range`,
+        `Click para colocar – 1=⚡ Electric / 2=🔥 Fire / 3=❄ Frost · ←/→ cambia skin · Espacio pausa · F 2x · pasa el mouse sobre una torre para ver DPS/Range`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -132,11 +136,18 @@ function createSceneClass() {
       this.rangeCircle = this.add.circle(0, 0, 50, 0x4cc2ff, 0.12)
         .setStrokeStyle(2, 0x4cc2ff, 0.8).setDepth(200).setVisible(false);
 
+      // Banner de PAUSA
+      this.pauseText = this.add.text(
+        this.game.scale.width / 2, 60, '⏸ PAUSA',
+        { fontFamily: 'monospace', fontSize: '20px', color: '#ffb7b7' }
+      ).setOrigin(0.5).setDepth(1500).setVisible(false);
+
       // Mapa
       this.drawMapFromJSON(this.map);
 
       // Colocar torres
       this.input.on('pointerdown', (p: any) => {
+        if (this.paused) return;
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
@@ -164,14 +175,19 @@ function createSceneClass() {
         });
       });
 
-      // Teclado
+      // Teclado (no usamos scene.pause/resume para no perder foco del teclado)
+      // Toggle pausa con SPACE (evita scroll de página)
+      const spaceKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE, true, true);
+      spaceKey?.on('down', (ev: any) => { ev?.preventDefault?.(); this.togglePause(); });
+      this.input.keyboard?.on('keydown-SPACE', (ev: any) => { ev?.preventDefault?.(); this.togglePause(); });
+
+      // Selección / navegación
       this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
         if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; }
         if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; }
         if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; }
         if (e.key === 'ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
         if (e.key === 'ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
-        if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
       });
 
@@ -179,6 +195,13 @@ function createSceneClass() {
       this.setupWavesFromJSON(this.map);
 
       this.ready = true;
+    }
+
+    togglePause() {
+      this.paused = !this.paused;
+      this.pauseText?.setVisible(this.paused);
+      if (this.time) this.time.paused = this.paused;
+      if ((this.physics as any)?.world) (this.physics as any).world.isPaused = this.paused;
     }
 
     drawMapFromJSON(map: MapDef) {
@@ -204,6 +227,8 @@ function createSceneClass() {
     setupWavesFromJSON(map: MapDef) {
       this.waveIndex = 0;
       const next = () => {
+        if (this.paused) { this.time.delayedCall(300, next); return; }
+
         this.waveIndex++;
         const W = map.waves;
         const count = W.baseCount + this.waveIndex * W.countPerWave;
@@ -249,6 +274,7 @@ function createSceneClass() {
       (e as any).hpbar = bar;
 
       (e as any).updateTick = () => {
+        if (this.paused) return;
         const i = (e as any).pathIndex;
         if (i >= path.length) { e.destroy(); bar.destroy(); return; }
         const target = path[i];
@@ -345,8 +371,9 @@ function createSceneClass() {
     }
 
     update(time: number, dt: number) {
-      // ✅ Guardas extra para evitar "getChildren of undefined"
+      // Guardas extra
       if (!this.ready || !this.enemies || !this.projectiles) return;
+      if (this.paused) return;
 
       this.enemies.getChildren().forEach((e: any) => e?.updateTick?.());
 
