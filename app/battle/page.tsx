@@ -1,12 +1,12 @@
-// app/battle/page.tsx
-import nextDynamic from 'next/dynamic';
+// app/battle/page.tsx  (SERVER COMPONENT)
+import NextDynamic from 'next/dynamic';
 
-// Fuerza render dinámico (sin SSG/ISR) para esta ruta
+// Fuerza render dinámico (evita SSG/ISR)
 export const dynamic = 'force-dynamic';
 export const revalidate = false;
 
-// Carga del cliente (sin SSR) para Phaser
-const BattleClient = nextDynamic(() => import('./BattleClient'), { ssr: false });
+// Cargar el cliente de Phaser sólo en el navegador
+const BattleClient = NextDynamic(() => import('./BattleClient'), { ssr: false });
 
 export default function Page() {
   return <BattleClient />;
