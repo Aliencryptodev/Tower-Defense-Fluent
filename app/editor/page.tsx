@@ -1,443 +1,131 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 
-// Tipos compatibles con el runtime
-type MapPoint = { x: number; y: number };
-type MapRect  = { x: number; y: number; w: number; h: number };
-type MapDef = {
-  name: string;
-  tileSize: number; width: number; height: number;
-  terrain: string;
-  preview?: string;
-  previewAlpha?: number;
-  pathSkins?: string[];
-  pathFrames?: Record<string, string>;
-  buildMask: MapRect[];
-  paths: MapPoint[][];
-  waves: {
-    baseCount: number; countPerWave: number;
-    baseHP: number; hpPerWave: number;
-    baseSpeed: number; speedPerWave: number;
-    spawnDelayMs: number; rewardBase: number;
-  }
-};
+const TILE = 64;
+const GRID_W = 18;
+const GRID_H = 10;
 
-const DEFAULT_MAP: MapDef = {
-  name: 'new_map',
-  tileSize: 64,
-  width: 16,
-  height: 10,
-  terrain: 'Grass Path',
-  preview: '',
-  previewAlpha: 0.28,
-  pathSkins: ['Grass Path', 'Grass Path'],
-  pathFrames: {},
-  buildMask: [],
-  paths: [[], []],
-  waves: {
-    baseCount: 10, countPerWave: 2,
-    baseHP: 20, hpPerWave: 8,
-    baseSpeed: 55, speedPerWave: 2,
-    spawnDelayMs: 600, rewardBase: 4,
-  }
-};
+export default function EditorPage() {
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [terrainKey, setTerrainKey] = useState('grass'); // placeholder
+  const [paths, setPaths] = useState<{ x: number; y: number }[][]>([[], []]);
+  const [maskRects, setMaskRects] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-const SUGGESTED_FRAMES = ['Grass Path','Snow Path','Stone Path','Lava Path'] as const;
-type Tool = 'pan' | 'path0' | 'path1' | 'mask' | 'erase' | 'override';
-
-export default function MapEditorPage() {
-  const [map, setMap] = useState<MapDef>(() => {
-    const fromLS = typeof window !== 'undefined' && localStorage.getItem('td_editor_map');
-    return fromLS ? JSON.parse(fromLS) as MapDef : DEFAULT_MAP;
-  });
-
-  const [tool, setTool] = useState<Tool>('path0');
-  const [currentSkin, setCurrentSkin] = useState<string>('Grass Path');
-  const [isPanning, setIsPanning] = useState(false);
-  const [offset, setOffset] = useState({x:0, y:0});
-  const startPan = useRef<{x:number,y:number} | null>(null);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileBgRef = useRef<HTMLInputElement>(null);
-  const fileJsonRef = useRef<HTMLInputElement>(null);
-
-  const pxW = map.width * map.tileSize;
-  const pxH = map.height * map.tileSize;
-
-  // Persistencia local
-  useEffect(() => {
-    localStorage.setItem('td_editor_map', JSON.stringify(map));
-  }, [map]);
-
-  // --- Dibujo (ARREGLADO ORDEN: base -> imagen -> overlays) ---
-  useEffect(() => {
-    const cvs = canvasRef.current;
-    if (!cvs) return;
-    cvs.width = pxW; cvs.height = pxH;
-    const g = cvs.getContext('2d');
-    if (!g) return;
-
-    const drawOverlays = () => {
-      // grid tenue
-      g.strokeStyle = 'rgba(255,255,255,0.06)';
-      for (let x = 0; x <= map.width; x++) {
-        g.beginPath(); g.moveTo(x*map.tileSize, 0); g.lineTo(x*map.tileSize, pxH); g.stroke();
-      }
-      for (let y = 0; y <= map.height; y++) {
-        g.beginPath(); g.moveTo(0, y*map.tileSize); g.lineTo(pxW, y*map.tileSize); g.stroke();
-      }
-
-      // buildMask
-      g.fillStyle = 'rgba(255,80,80,0.25)';
-      for (const r of map.buildMask) {
-        g.fillRect(r.x*map.tileSize, r.y*map.tileSize, r.w*map.tileSize, r.h*map.tileSize);
-      }
-
-      // overrides por casilla
-      Object.entries(map.pathFrames ?? {}).forEach(([key, frame])=>{
-        const [tx, ty] = key.split(',').map(Number);
-        g.fillStyle = frameColor(frame);
-        g.fillRect(tx*map.tileSize, ty*map.tileSize, map.tileSize, map.tileSize);
-      });
-
-      // paths por carril
-      for (let lane=0; lane<map.paths.length; lane++) {
-        const col = laneColors[lane % laneColors.length];
-        const points = map.paths[lane];
-        g.fillStyle = hexA(col, 0.18);
-        for (const p of points) {
-          g.fillRect(p.x*map.tileSize, p.y*map.tileSize, map.tileSize, map.tileSize);
-        }
-        g.strokeStyle = hexA(col, 0.9);
-        g.lineWidth = 2;
-        g.beginPath();
-        points.forEach((p,i)=>{
-          const cx = p.x*map.tileSize + map.tileSize/2;
-          const cy = p.y*map.tileSize + map.tileSize/2;
-          if (i===0) g.moveTo(cx,cy); else g.lineTo(cx,cy);
-        });
-        g.stroke();
-      }
-    };
-
-    // limpiar + base
-    g.clearRect(0,0,pxW,pxH);
-    g.fillStyle = '#0c0e12';
-    g.fillRect(0,0,pxW,pxH);
-
-    // imagen de fondo (si hay)
-    if (map.preview) {
-      const img = new Image();
-      img.onload = () => {
-        g.save();
-        g.globalAlpha = Math.min(1, Math.max(0, map.previewAlpha ?? 0.28));
-        g.drawImage(img, 0, 0, pxW, pxH);
-        g.restore();
-        drawOverlays();
-      };
-      img.src = map.preview;
-    } else {
-      drawOverlays();
-    }
-  }, [map, pxW, pxH]);
-
-  // ------- Interacción -------
-  const tileFromMouse = (ev: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = (ev.target as HTMLCanvasElement).getBoundingClientRect();
-    const mx = (ev.clientX - rect.left);
-    const my = (ev.clientY - rect.top);
-    const tx = Math.floor(mx / map.tileSize);
-    const ty = Math.floor(my / map.tileSize);
-    if (tx<0 || ty<0 || tx>=map.width || ty>=map.height) return null;
-    return {tx, ty};
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    setBgUrl(url); // ✅ ahora se ve siempre
   };
 
-  const onCanvasDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
-    if (tool === 'pan') {
-      setIsPanning(true);
-      startPan.current = {x: ev.clientX - offset.x, y: ev.clientY - offset.y};
-      return;
-    }
-    const t = tileFromMouse(ev);
-    if (!t) return;
-
-    if (tool === 'path0' || tool === 'path1') {
-      const lane = tool === 'path0' ? 0 : 1;
-      addPointToPath(lane, t.tx, t.ty);
-    } else if (tool === 'mask') {
-      toggleMaskCell(t.tx, t.ty);
-    } else if (tool === 'erase') {
-      eraseAt(t.tx, t.ty);
-    } else if (tool === 'override') {
-      setMap(m => {
-        const key = `${t.tx},${t.ty}`;
-        const next = {...m, pathFrames: {...(m.pathFrames||{})} };
-        next.pathFrames![key] = currentSkin;
-        return next;
-      });
-    }
+  const addPathPoint = (lane: number, x: number, y: number) => {
+    setPaths(prev => {
+      const next = prev.map(a => [...a]) as any;
+      next[lane].push({ x, y });
+      return next;
+    });
   };
-
-  const onCanvasMove = (ev: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isPanning && startPan.current) {
-      setOffset({x: ev.clientX - startPan.current.x, y: ev.clientY - startPan.current.y});
-      return;
-    }
-    if (ev.buttons !== 1) return;
-    const t = tileFromMouse(ev);
-    if (!t) return;
-    if (tool === 'mask') toggleMaskCell(t.tx, t.ty, true);
-    if (tool === 'override') {
-      setMap(m => {
-        const key = `${t.tx},${t.ty}`;
-        const next = {...m, pathFrames: {...(m.pathFrames||{})} };
-        next.pathFrames![key] = currentSkin;
-        return next;
-      });
-    }
-  };
-  const onCanvasUp = () => { setIsPanning(false); startPan.current = null; };
-
-  function addPointToPath(lane: number, x:number, y:number) {
-    setMap(m => {
-      const paths = m.paths.map(p => [...p]);
-      const last = paths[lane][paths[lane].length-1];
-      if (!last || last.x !== x || last.y !== y) {
-        paths[lane].push({x,y});
-      }
-      const pathSkins = (m.pathSkins && m.pathSkins.length>=m.paths.length)
-        ? [...m.pathSkins]
-        : Array.from({length: m.paths.length}, (_,i)=> m.pathSkins?.[i] ?? m.terrain);
-      return {...m, paths, pathSkins};
-    });
-  }
-
-  function toggleMaskCell(x:number,y:number,_drag=false) {
-    setMap(m => {
-      const bm = [...m.buildMask];
-      const idx = bm.findIndex(r => r.x===x && r.y===y && r.w===1 && r.h===1);
-      if (idx>=0) { bm.splice(idx,1); } else { bm.push({x,y,w:1,h:1}); }
-      return {...m, buildMask: bm};
-    });
-  }
-
-  function eraseAt(x:number, y:number) {
-    setMap(m=>{
-      const paths = m.paths.map(p=> p.filter(pt => !(pt.x===x && pt.y===y)));
-      const bm = m.buildMask.filter(r => !(r.x===x && r.y===y && r.w===1 && r.h===1));
-      const key = `${x},${y}`;
-      const pf = {...(m.pathFrames||{})};
-      if (pf[key]) delete pf[key];
-      return {...m, paths, buildMask: bm, pathFrames: pf};
-    });
-  }
 
   const exportJSON = () => {
-    const merged = mergeRects(map.buildMask, map.width, map.height);
-    const data: MapDef = {...map, buildMask: merged};
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+    const data = {
+      name: 'custom',
+      tileSize: TILE,
+      width: GRID_W,
+      height: GRID_H,
+      terrain: terrainKey,
+      buildMask: maskRects,
+      paths,
+      waves: {
+        baseCount: 5, countPerWave: 2,
+        baseHP: 30, hpPerWave: 6,
+        baseSpeed: 90, speedPerWave: 5,
+        spawnDelayMs: 420, rewardBase: 6
+      }
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${map.name}.json`;
+    a.download = `map_${Date.now()}.json`;
     a.click();
-    URL.revokeObjectURL(a.href);
   };
 
-  const exportPNG = () => {
-    const cvs = canvasRef.current;
-    if (!cvs) return;
-    cvs.toBlob((blob)=>{
-      if (!blob) return;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${map.name}_preview.png`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    });
-  };
+  const wpx = GRID_W * TILE, hpx = GRID_H * TILE;
 
-  const onImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const rd = new FileReader();
-    rd.onload = () => {
-      try {
-        const obj = JSON.parse(rd.result as string) as MapDef;
-        setMap(prev => ({
-          ...prev,
-          ...obj,
-          pathFrames: obj.pathFrames || {},
-          pathSkins: obj.pathSkins || obj.paths.map(()=>obj.terrain)
-        }));
-      } catch {}
-      e.target.value = '';
-    };
-    rd.readAsText(f);
-  };
-
-  const onImportBg = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const rd = new FileReader();
-    rd.onload = () => setMap(m => ({...m, preview: rd.result as string}));
-    rd.readAsDataURL(f);
-  };
+  const gridLines = useMemo(() => {
+    const verticals = Array.from({ length: GRID_W + 1 }, (_, i) => i * TILE);
+    const horizontals = Array.from({ length: GRID_H + 1 }, (_, i) => i * TILE);
+    return { verticals, horizontals };
+  }, []);
 
   return (
-    <div style={{display:'grid', gridTemplateColumns:'320px 1fr', minHeight:'100vh'}}>
-      <div style={{padding:12, background:'#0b1220', color:'#e8f4ff', fontFamily:'monospace', borderRight:'1px solid #162033'}}>
-        <h2 style={{margin:'6px 0'}}>Editor de Mapas</h2>
-
-        <label>Nombre<br/>
-          <input value={map.name} onChange={e=>setMap(m=>({...m,name:e.target.value}))} />
-        </label>
-
-        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginTop:8}}>
-          <label>TileSize<br/>
-            <input type="number" value={map.tileSize} onChange={e=>setMap(m=>({...m, tileSize: +e.target.value || 1}))}/>
-          </label>
-          <label>Ancho (tiles)<br/>
-            <input type="number" value={map.width} onChange={e=>setMap(m=>({...m, width: Math.max(1, +e.target.value||1)}))}/>
-          </label>
-          <label>Alto (tiles)<br/>
-            <input type="number" value={map.height} onChange={e=>setMap(m=>({...m, height: Math.max(1, +e.target.value||1)}))}/>
-          </label>
-        </div>
-
-        <div style={{marginTop:8}}>
-          <div>Frame base de camino</div>
-          <select value={map.terrain} onChange={e=>setMap(m=>({...m, terrain: e.target.value}))}>
-            {SUGGESTED_FRAMES.map(f=><option key={f} value={f}>{f}</option>)}
+    <main className="min-h-screen bg-[#0c0e12] text-white">
+      <div className="max-w-6xl mx-auto p-6">
+        <h1 className="text-xl font-semibold mb-3">Editor de Mapas (64px · {GRID_W}×{GRID_H})</h1>
+        <div className="flex gap-3 items-center mb-4">
+          <input ref={fileRef} type="file" accept="image/*" onChange={onPick} />
+          <select
+            className="bg-[#131823] border border-[#22304a] rounded px-2 py-1 text-sm"
+            value={terrainKey}
+            onChange={(e) => setTerrainKey(e.target.value)}
+          >
+            <option value="grass_dual">Grass Dual</option>
+            <option value="sand_dual">Sand Dual</option>
+            <option value="rock_dual">Rock Dual</option>
+            <option value="lava_dual">Lava Dual</option>
           </select>
-        </div>
-
-        <div style={{marginTop:8}}>
-          <div>Skins por carril</div>
-          {map.paths.map((_,i)=>(
-            <div key={i} style={{display:'flex', gap:6, alignItems:'center', margin:'4px 0'}}>
-              <span>Lane {i+1}</span>
-              <select
-                value={map.pathSkins?.[i] ?? map.terrain}
-                onChange={e=>{
-                  setMap(m=>{
-                    const ps = [...(m.pathSkins||[])];
-                    ps[i] = e.target.value;
-                    return {...m, pathSkins: ps};
-                  });
-                }}
-              >
-                {SUGGESTED_FRAMES.map(f=><option key={f} value={f}>{f}</option>)}
-              </select>
-            </div>
-          ))}
-          <button onClick={()=>setMap(m=>({...m, paths:[...m.paths, []], pathSkins:[...(m.pathSkins||[]), m.terrain]}))}>
-            + Añadir carril
+          <button
+            onClick={exportJSON}
+            className="px-3 py-1 rounded bg-[#1f2b46] border border-[#2e4164] text-sm hover:bg-[#25365a]"
+          >
+            Exportar JSON
           </button>
         </div>
 
-        <div style={{marginTop:8}}>
-          <div>Herramientas</div>
-          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:6}}>
-            <button onClick={()=>setTool('path0')}>Path 1</button>
-            <button onClick={()=>setTool('path1')}>Path 2</button>
-            <button onClick={()=>setTool('mask')}>Mask</button>
-            <button onClick={()=>setTool('erase')}>Borrar</button>
-            <button onClick={()=>setTool('override')}>Override</button>
-            <button onClick={()=>setTool('pan')}>Pan</button>
-          </div>
-          <div style={{marginTop:6}}>
-            Skin override:
-            <select value={currentSkin} onChange={e=>setCurrentSkin(e.target.value)}>
-              {SUGGESTED_FRAMES.map(f=><option key={f} value={f}>{f}</option>)}
-            </select>
-          </div>
-          <div style={{marginTop:6}}>
-            Opacidad fondo:
-            <input type="range" min={0} max={1} step={0.01}
-              value={map.previewAlpha ?? 0.28}
-              onChange={e=>setMap(m=>({...m, previewAlpha: +e.target.value}))}
+        <div
+          className="relative rounded-2xl overflow-hidden border border-[#22304a]"
+          style={{ width: wpx, height: hpx, background: '#0a0e14' }}
+          onClick={(e) => {
+            const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const tx = Math.floor(mx / TILE);
+            const ty = Math.floor(my / TILE);
+            addPathPoint(0, tx, ty); // por defecto lane 0
+          }}
+        >
+          {/* Fondo */}
+          {bgUrl && (
+            <img
+              src={bgUrl}
+              alt="Fondo"
+              className="absolute inset-0 object-cover"
+              style={{ width: wpx, height: hpx }}
             />
-          </div>
-        </div>
+          )}
 
-        <div style={{marginTop:8}}>
-          <div>Fondo (imagen)</div>
-          <div style={{display:'flex', gap:6}}>
-            <input ref={fileBgRef} type="file" accept="image/*" onChange={onImportBg}/>
-            <button onClick={()=>{ setMap(m=>({...m, preview:''})); if (fileBgRef.current) fileBgRef.current.value=''; }}>Quitar</button>
-          </div>
-          <div style={{marginTop:6}}>
-            o URL:
-            <input placeholder="/previews/mi_mapa.png"
-                   value={map.preview ?? ''}
-                   onChange={e=>setMap(m=>({...m, preview:e.target.value}))}/>
-          </div>
-        </div>
+          {/* Grid */}
+          {gridLines.verticals.map((x) => (
+            <div key={'v'+x} className="absolute top-0 bottom-0" style={{ left: x, width: 1, background: '#1e2a40' }} />
+          ))}
+          {gridLines.horizontals.map((y) => (
+            <div key={'h'+y} className="absolute left-0 right-0" style={{ top: y, height: 1, background: '#1e2a40' }} />
+          ))}
 
-        <div style={{marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr', gap:6}}>
-          <button onClick={exportJSON}>Export JSON</button>
-          <button onClick={exportPNG}>Export PNG</button>
-          <button onClick={()=>fileJsonRef.current?.click()}>Import JSON</button>
-          <input ref={fileJsonRef} type="file" accept="application/json" style={{display:'none'}} onChange={onImportJSON}/>
+          {/* Path preview */}
+          {paths[0].map((p, i) => (
+            <div key={i} className="absolute rounded-full" style={{
+              left: p.x * TILE + TILE/2 - 5,
+              top:  p.y * TILE + TILE/2 - 5,
+              width: 10, height: 10, background: '#65ff9b', boxShadow: '0 0 10px #65ff9b'
+            }} />
+          ))}
         </div>
-
-        <div style={{marginTop:12, fontSize:12, opacity:0.8}}>
-          Consejos: Click para añadir steps del camino (en orden). “Mask” marca celdas no construibles.
-          “Override” mezcla frames de camino por casilla para estética. Si usas dataURL también funciona.
-        </div>
+        <p className="text-xs text-[#8aa4d6] mt-2">
+          Tip: haz click para añadir puntos del camino (lane 0). Pronto añadimos lanes múltiples y pinceles.
+        </p>
       </div>
-
-      <div style={{position:'relative', overflow:'auto', background:'#04070f'}}>
-        <div style={{width:pxW, height:pxH, transform:`translate(${offset.x}px,${offset.y}px)`}}>
-          <canvas
-            ref={canvasRef}
-            style={{display:'block', imageRendering:'pixelated', cursor: tool==='pan' ? 'grab' : 'crosshair'}}
-            onMouseDown={onCanvasDown}
-            onMouseMove={onCanvasMove}
-            onMouseUp={onCanvasUp}
-            onMouseLeave={onCanvasUp}
-          />
-        </div>
-      </div>
-    </div>
+    </main>
   );
-}
-
-/* ---------- helpers ---------- */
-const laneColors = ['#4cc2ff', '#ff8a4c', '#9dff6b', '#fef45d'];
-function hexA(hex: string, a: number) {
-  const c = hex.replace('#','');
-  const r = parseInt(c.substring(0,2),16);
-  const g = parseInt(c.substring(2,4),16);
-  const b = parseInt(c.substring(4,6),16);
-  return `rgba(${r},${g},${b},${a})`;
-}
-function frameColor(frame: string) {
-  switch (frame) {
-    case 'Grass Path': return 'rgba(50,200,120,0.25)';
-    case 'Snow Path':  return 'rgba(200,230,255,0.25)';
-    case 'Stone Path': return 'rgba(180,180,180,0.25)';
-    case 'Lava Path':  return 'rgba(255,110,60,0.25)';
-    default:           return 'rgba(140,160,200,0.25)';
-  }
-}
-function mergeRects(cells: MapRect[], width:number, height:number): MapRect[] {
-  const grid:boolean[][] = Array.from({length:height}, ()=> Array.from({length:width}, ()=>false));
-  for (const r of cells) {
-    for (let x=r.x; x<r.x+r.w; x++) for (let y=r.y; y<r.y+r.h; y++) {
-      if (x>=0 && x<width && y>=0 && y<height) grid[y][x] = true;
-    }
-  }
-  const out: MapRect[] = [];
-  for (let y=0; y<height; y++) {
-    let x=0;
-    while (x<width) {
-      if (!grid[y][x]) { x++; continue; }
-      const x0=x;
-      while (x<width && grid[y][x]) x++;
-      out.push({x:x0, y, w:x-x0, h:1});
-    }
-  }
-  return out;
 }
