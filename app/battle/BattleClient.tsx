@@ -51,25 +51,22 @@ async function loadMapDef(name: string): Promise<MapDef> {
 
 /* ----------------------------- Torretas ----------------------------- */
 const ELECTRIC: TowerModel[] = [
-  { frame: 'Arc Coil I',     fam: 'electric', cost: 45,  dmg: 18, range: 190, cd: 700, projectile: 'Lightning Bolt', chain: { hops: 2, falloff: 0.7 } },
-  { frame: 'Tesla Grid III', fam: 'electric', cost: 85,  dmg: 30, range: 210, cd: 620, projectile: 'Lightning Bolt', chain: { hops: 3, falloff: 0.7 } },
-  { frame: 'Storm Lord V',   fam: 'electric', cost: 140, dmg: 48, range: 230, cd: 540, projectile: 'Lightning Bolt', chain: { hops: 4, falloff: 0.7 } },
-  // 4ª torre: “Reality Rift V” (eléctrica end-game, más alcance, menos CD)
-  { frame: 'Reality Rift V', fam: 'electric', cost: 200, dmg: 52, range: 260, cd: 480, projectile: 'Lightning Bolt', chain: { hops: 5, falloff: 0.75 } },
+  { frame: 'Arc Coil I',       fam: 'electric', cost: 45,  dmg: 18, range: 190, cd: 700, projectile: 'Lightning Bolt', chain: { hops: 2, falloff: 0.7 } },
+  { frame: 'Tesla Grid III',   fam: 'electric', cost: 85,  dmg: 30, range: 210, cd: 620, projectile: 'Lightning Bolt', chain: { hops: 3, falloff: 0.7 } },
+  { frame: 'Storm Lord V',     fam: 'electric', cost: 140, dmg: 48, range: 230, cd: 540, projectile: 'Lightning Bolt', chain: { hops: 4, falloff: 0.7 } },
+  { frame: 'Reality Rift V',   fam: 'electric', cost: 200, dmg: 52, range: 260, cd: 480, projectile: 'Lightning Bolt', chain: { hops: 5, falloff: 0.75 } },
 ];
 const FIRE: TowerModel[] = [
-  { frame: 'Flame Turret I',   fam: 'fire', cost: 45,  dmg: 14, range: 150, cd: 600, projectile: 'Fireball',   dot: { dps: 6,  ms: 1200 } },
-  { frame: 'Inferno Core III', fam: 'fire', cost: 85,  dmg: 22, range: 165, cd: 520, projectile: 'Fireball',   dot: { dps: 10, ms: 1400 } },
-  { frame: 'Phoenix Gate V',   fam: 'fire', cost: 140, dmg: 30, range: 180, cd: 480, projectile: 'Fireball',   dot: { dps: 16, ms: 1600 } },
-  // 4ª torre: “Inferno+” (mucha quemadura)
-  { frame: 'Inferno Citadel V', fam: 'fire', cost: 200, dmg: 36, range: 190, cd: 450, projectile: 'Fireball', dot: { dps: 22, ms: 1700 } },
+  { frame: 'Flame Turret I',     fam: 'fire', cost: 45,  dmg: 14, range: 150, cd: 600, projectile: 'Fireball',   dot: { dps: 6,  ms: 1200 } },
+  { frame: 'Inferno Core III',   fam: 'fire', cost: 85,  dmg: 22, range: 165, cd: 520, projectile: 'Fireball',   dot: { dps: 10, ms: 1400 } },
+  { frame: 'Phoenix Gate V',     fam: 'fire', cost: 140, dmg: 30, range: 180, cd: 480, projectile: 'Fireball',   dot: { dps: 16, ms: 1600 } },
+  { frame: 'Inferno Citadel V',  fam: 'fire', cost: 200, dmg: 36, range: 190, cd: 450, projectile: 'Fireball',   dot: { dps: 22, ms: 1700 } },
 ];
 const FROST: TowerModel[] = [
-  { frame: 'Ice Shard I',       fam: 'frost', cost: 45,  dmg: 16, range: 180, cd: 640, projectile: 'Ice Shard', slow: { factor: 0.7, ms: 1200 } },
-  { frame: 'Frost Cannon III',  fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
-  { frame: 'Absolute Zero V',   fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
-  // 4ª torre: “World Tree V” (mucho slow, menos daño)
-  { frame: 'World Tree V',      fam: 'frost', cost: 200, dmg: 34, range: 240, cd: 500, projectile: 'Ice Shard', slow: { factor: 0.45, ms: 1900 } },
+  { frame: 'Ice Shard I',        fam: 'frost', cost: 45,  dmg: 16, range: 180, cd: 640, projectile: 'Ice Shard', slow: { factor: 0.7, ms: 1200 } },
+  { frame: 'Frost Cannon III',   fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
+  { frame: 'Absolute Zero V',    fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
+  { frame: 'World Tree V',       fam: 'frost', cost: 200, dmg: 34, range: 240, cd: 500, projectile: 'Ice Shard', slow: { factor: 0.45, ms: 1900 } },
 ];
 const GROUPS: Record<FamKey, TowerModel[]> = { electric: ELECTRIC, fire: FIRE, frost: FROST };
 
@@ -108,17 +105,35 @@ function createSceneClass() {
     tooltip!: any;
     rangeCircle!: any;
 
+    // HUD extra
+    hotbar!: any;
+    hotbarIcons: any[] = [];
+    ghost!: any; // preview de torre
+
     // selección
     selFam: FamKey = 'electric';
     selIdx = 0;
+
     blockedTiles = new Set<string>();
 
     // control spawn/fin de ola
     lastWaveSpawnFinishAt = 0;
+    wavePlanned = 0;
+    waveKilled = 0;
+    waveLeaked = 0;
+    waveBarBg!: any;
+    waveBarFg!: any;
+    waveCountText!: any;
 
     /* -------------------- util -------------------- */
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
+    isBuildable(tx: number, ty: number, model: TowerModel) {
+      if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return false;
+      if (this.blockedTiles.has(this.tileKey(tx, ty))) return false;
+      if (this.gold < model.cost) return false;
+      return true;
+    }
 
     /* -------------------- preload -------------------- */
     preload() {
@@ -160,7 +175,7 @@ function createSceneClass() {
       this.map = await loadMapDef(mapName);
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      // UI
+      // UI básica
       this.goldText = this.add.text(16, 16, `🪙 ${this.gold}`, {
         color: '#ffd76a', fontFamily: 'monospace', fontSize: '18px'
       }).setDepth(1000);
@@ -175,7 +190,7 @@ function createSceneClass() {
 
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · 4=🛡 · ←/→ cambia skin · Espacio pausa · F x2 · ENTER inicia oleada · Click torre para Upgrade/Vender`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · 4=atajo ⚡ (4ª) · ←/→ cambia skin · Espacio pausa · F x2 · ENTER inicia · Click torre => Upgrade/Vender`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -190,27 +205,32 @@ function createSceneClass() {
       // Pintar mapa
       this.drawMapFromJSON(this.map);
 
-      // Botonera táctil (mute/pause/x2/next)
+      // HUD extra: botones táctiles, hotbar, barra de oleada y ghost
       this.buildTouchUI();
+      this.buildHotbar();
+      this.buildWaveBar();
+      this.buildGhost();
 
-      // Colocar torres / abrir menú si clicas sobre una
+      // Colocar torres / abrir menú si clicas sobre una / ignorar UI
       this.input.on('pointerdown', (p: any) => {
         if (this.gameOver) return;
 
-        const objects = this.input.hitTestPointer(p);
+        const objects = this.input.hitTestPointer(p) as any[];
+        // 1) si clicas sobre UI, no colocar
+        if (objects.some(o => o?.getData && o.getData('ui'))) return;
+
+        // 2) si clicas sobre torre, abrir menú (no colocar)
         const towerObj = objects.find((o: any) => o?.getData && o.getData('tower'));
-        if (towerObj) { // abrir menú de esa torre
+        if (towerObj) {
           const t = this.towers.find(T => T.sprite === towerObj);
           if (t) this.openTowerMenu(t);
           return;
         }
 
-        // colocar torre si clicas suelo libre
+        // 3) colocar torre si clicas suelo libre
         const model = GROUPS[this.selFam][this.selIdx % GROUPS[this.selFam].length];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
-        if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
-        if (this.blockedTiles.has(this.tileKey(tx, ty))) return;
-        if (this.gold < model.cost) return;
+        if (!this.isBuildable(tx, ty, model)) return;
 
         this.gold -= model.cost;
         this.goldText.setText(`🪙 ${this.gold}`);
@@ -220,6 +240,7 @@ function createSceneClass() {
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
         const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300).setData('tower', true);
         this.towers.push({ sprite: spr, model, last: 0, level: 1 });
+        this.blockedTiles.add(this.tileKey(tx, ty)); // bloquear casilla
 
         spr.setInteractive({ cursor: 'pointer' });
         spr.on('pointerover', () => {
@@ -229,16 +250,21 @@ function createSceneClass() {
             .setText(`T: ${model.frame} | lvl ${this.getLevel(spr)}\nDPS ${dps} · Range ${this.getRange(spr)} · CD ${this.getCd(spr)}ms`);
         });
         spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
+
+        this.refreshHotbar();
       });
+
+      // ghost seguir ratón
+      this.input.on('pointermove', (p: any) => this.updateGhost(p.worldX, p.worldY));
 
       // Teclado
       this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
-        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; }
-        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; }
-        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; }
-        if (e.key === '4') { this.selFam = 'electric'; this.selIdx = 3; } // atajo a la 4ª
-        if (e.key === 'ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
-        if (e.key === 'ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; this.refreshGhost(); this.refreshHotbar(); }
+        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; this.refreshGhost(); this.refreshHotbar(); }
+        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; this.refreshGhost(); this.refreshHotbar(); }
+        if (e.key === '4') { this.selFam = 'electric'; this.selIdx = 3; this.refreshGhost(); this.refreshHotbar(); }
+        if (e.key === 'ArrowLeft')  { this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length; this.refreshGhost(); }
+        if (e.key === 'ArrowRight') { this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length; this.refreshGhost(); }
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
         if (e.code === 'Enter') this.startNextWave();
@@ -253,6 +279,7 @@ function createSceneClass() {
 
       this.ready = true;
       this.updateWaveUI();
+      this.refreshHotbar();
     }
 
     /* ------------------- helpers UI ------------------- */
@@ -262,8 +289,8 @@ function createSceneClass() {
       const y = 16;
 
       const mkBtn = (label: string, x: number, on: () => void) => {
-        const r = this.add.rectangle(x, y, 28, 18, 0x202a36, 0.85).setOrigin(0,0).setStrokeStyle(1, 0x7fb1ff, 0.9).setDepth(1500);
-        const t = this.add.text(x+4, y+2, label, { fontFamily: 'monospace', fontSize: '11px', color: '#cfe8ff' }).setDepth(1500);
+        const r = this.add.rectangle(x, y, 28, 18, 0x202a36, 0.85).setOrigin(0,0).setStrokeStyle(1, 0x7fb1ff, 0.9).setDepth(1500).setData('ui', true);
+        const t = this.add.text(x+4, y+2, label, { fontFamily: 'monospace', fontSize: '11px', color: '#cfe8ff' }).setDepth(1500).setData('ui', true);
         r.setInteractive(); r.on('pointerup', on);
       };
 
@@ -271,6 +298,92 @@ function createSceneClass() {
       mkBtn('x2',  w - (3*48) - pad, () => { this.time.timeScale = this.time.timeScale === 1 ? 2 : 1; });
       mkBtn('Next',w - (2*48) - pad, () => { this.startNextWave(); });
       mkBtn(this.muted ? '🔇' : '🔊', w - (1*48) - pad, () => this.toggleMute());
+    }
+
+    buildHotbar() {
+      const baseX = 12, baseY = this.scale.height - 96;
+      const cellW = 60, cellH = 60, gap = 6;
+
+      this.hotbar = this.add.container(baseX, baseY).setDepth(1500).setData('ui', true);
+      const families: FamKey[] = ['electric','fire','frost'];
+
+      families.forEach((fam, row) => {
+        GROUPS[fam].forEach((model, col) => {
+          const x = col * (cellW + gap), y = row * (cellH + gap);
+          const bg = this.add.rectangle(x, y, cellW, cellH, 0x101820, 0.95)
+            .setOrigin(0,0).setStrokeStyle(1, 0x3a5a8f, 0.9).setData('ui', true);
+          const icon = this.add.image(x + cellW/2, y + cellH/2 - 6, 'towers', model.frame)
+            .setScale(0.7).setData('ui', true);
+          const cost = this.add.text(x + 4, y + cellH - 16, `${model.cost}`, {
+            fontFamily:'monospace', fontSize:'11px', color:'#ffd76a'
+          }).setData('ui', true);
+
+          [bg, icon, cost].forEach(o => o.setInteractive({ cursor:'pointer' }));
+          const select = () => {
+            this.selFam = fam;
+            this.selIdx = col;
+            this.refreshGhost();
+            this.refreshHotbar();
+          };
+          bg.on('pointerup', select);
+          icon.on('pointerup', select);
+          cost.on('pointerup', select);
+
+          this.hotbar.add([bg, icon, cost]);
+          this.hotbarIcons.push({ bg, icon, model, fam, idx: col });
+        });
+      });
+    }
+
+    refreshHotbar() {
+      this.hotbarIcons.forEach(({ bg, icon, model, fam, idx }) => {
+        const affordable = this.gold >= model.cost;
+        const selected = (this.selFam === fam && this.selIdx === idx);
+        icon.setAlpha(affordable ? 1 : 0.45);
+        bg.setStrokeStyle(1, selected ? 0x96d0ff : 0x3a5a8f, 1);
+      });
+    }
+
+    buildWaveBar() {
+      const w = 300, h = 10;
+      const x = this.scale.width / 2 - w/2, y = 46;
+
+      this.waveBarBg = this.add.rectangle(x, y, w, h, 0x0e1520, 0.9).setOrigin(0,0).setDepth(1000).setData('ui', true)
+        .setStrokeStyle(1, 0x416a9f, 1);
+      this.waveBarFg = this.add.rectangle(x+2, y+2, 1, h-4, 0x78ff9e, 0.95).setOrigin(0,0).setDepth(1001).setData('ui', true);
+      this.waveCountText = this.add.text(x + w + 8, y - 2, `0/0`, { fontFamily:'monospace', fontSize:'12px', color:'#cfe8ff' })
+        .setDepth(1001).setData('ui', true);
+      this.refreshWaveBar();
+    }
+
+    refreshWaveBar() {
+      const total = Math.max(1, this.wavePlanned);
+      const done = this.waveKilled + this.waveLeaked;
+      const ratio = Math.min(1, done / total);
+      const fgW = (300 - 4) * ratio;
+      this.waveBarFg.width = Math.max(1, fgW);
+      this.waveCountText.setText(`${done}/${this.wavePlanned}`);
+    }
+
+    buildGhost() {
+      const model = GROUPS[this.selFam][this.selIdx];
+      this.ghost = this.add.image(0,0,'towers', model.frame).setAlpha(0.55).setDepth(290).setVisible(false).setData('ui', true);
+    }
+    refreshGhost() {
+      if (!this.ghost) return;
+      const model = GROUPS[this.selFam][this.selIdx];
+      this.ghost.setTexture('towers', model.frame);
+    }
+    updateGhost(wx: number, wy: number) {
+      if (!this.ghost || !this.map) return;
+      const { tx, ty } = this.worldToTile(wx, wy);
+      const inBounds = tx >= 0 && ty >= 0 && tx < this.map.width && ty < this.map.height;
+      if (!inBounds) { this.ghost.setVisible(false); return; }
+      const cx = tx * this.map.tileSize + this.map.tileSize / 2;
+      const cy = ty * this.map.tileSize + this.map.tileSize / 2;
+      const model = GROUPS[this.selFam][this.selIdx];
+      const ok = this.isBuildable(tx, ty, model);
+      this.ghost.setVisible(true).setPosition(cx, cy).setTint(ok ? 0x88ff88 : 0xff6666);
     }
 
     toggleMute() {
@@ -306,9 +419,9 @@ function createSceneClass() {
     pickEnemyVisual(isBoss=false) {
       if (isBoss) {
         const bosses = [
-          { key: 'enemies64', frame: 'Chaos Dragon', resist: { fire: 0.6, frost: 1.1, electric: 0.9 } },
-          { key: 'enemies64', frame: 'Void Titan',   resist: { fire: 1.0, frost: 0.6, electric: 0.9 } },
-          { key: 'enemies64', frame: 'World Destroyer', resist: { fire: 0.8, frost: 0.8, electric: 0.8 } },
+          { key: 'enemies64', frame: 'Chaos Dragon',   resist: { fire: 0.6, frost: 1.1, electric: 0.9 } },
+          { key: 'enemies64', frame: 'Void Titan',     resist: { fire: 1.0, frost: 0.6, electric: 0.9 } },
+          { key: 'enemies64', frame: 'World Destroyer',resist: { fire: 0.8, frost: 0.8, electric: 0.8 } },
         ];
         for (const b of bosses) {
           const tex = this.textures.exists(b.key) ? this.textures.get(b.key) : null;
@@ -365,13 +478,15 @@ function createSceneClass() {
       }
 
       // Oleada secundaria cada 3
+      let extra = 0;
       if (this.waveIndex % 3 === 0) {
         const otherTiles = this.map.paths[pathIdx ? 0 : 1];
         const other = otherTiles.map(pt => ({
           x: pt.x * this.map.tileSize + this.map.tileSize / 2,
           y: pt.y * this.map.tileSize + this.map.tileSize / 2,
         }));
-        for (let i = 0; i < Math.floor(count * 0.7); i++) {
+        extra = Math.floor(count * 0.7);
+        for (let i = 0; i < extra; i++) {
           this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed, false));
         }
       }
@@ -384,8 +499,14 @@ function createSceneClass() {
         this.time.delayedCall(t, () => this.spawnEnemy(pathWorld, bossHp, bossSpeed, true));
       }
 
+      // Planificación para barra de progreso
+      this.wavePlanned = count + extra + bossCount;
+      this.waveKilled = 0;
+      this.waveLeaked = 0;
+      this.refreshWaveBar();
+
       // Momento en el que terminaron de salir
-      const totalSlots = count + Math.floor(count * 0.7) * (this.waveIndex % 3 === 0 ? 1 : 0);
+      const totalSlots = count + extra;
       const spawnTime  = (totalSlots) * W.spawnDelayMs + (bossCount ? (count * W.spawnDelayMs + 1800) : 0);
       this.lastWaveSpawnFinishAt = this.time.now + spawnTime + 500;
 
@@ -441,6 +562,7 @@ function createSceneClass() {
     onLeak(e: any, bar: any) {
       bar?.destroy(); e.destroy();
       if (this.gameOver) return;
+      this.waveLeaked++; this.refreshWaveBar();
       this.lives = Math.max(0, this.lives - (e.isBoss ? 3 : 1));
       this.livesText.setText(`❤️ ${this.lives}`);
       this.cameras.main.shake(120, 0.004);
@@ -529,12 +651,12 @@ function createSceneClass() {
       const fam = proj.fam as FamKey;
       const baseDmg = proj.dmg as number;
 
-      // resistencias (1 = normal; <1 resistencia; >1 debilidad)
+      // resistencias
       const resistMul = e.resist?.[fam] ?? 1;
       const finalDmg = Math.max(1, Math.round(baseDmg * resistMul));
       e.hp -= finalDmg;
 
-      // efectos secundarios (capturados en const para no leer proj luego)
+      // efectos secundarios
       if (fam === 'frost' && proj.slow) {
         const slowFactor: number = proj.slow.factor;
         const slowMs: number = proj.slow.ms;
@@ -543,7 +665,7 @@ function createSceneClass() {
         this.time.delayedCall(slowMs, () => e && (e.speed = old));
       }
       if (fam === 'fire' && proj.dot) {
-        const dotDps: number = proj.dot.dps * resistMul; // DOT afectado por resistencia fuego
+        const dotDps: number = proj.dot.dps * resistMul;
         const dotMs: number = proj.dot.ms;
         const ticks = Math.floor(dotMs / 300);
         for (let i = 1; i <= ticks; i++) {
@@ -562,11 +684,14 @@ function createSceneClass() {
 
         e.hpbar?.destroy();
         e.destroy();
-        // recompensas (más en jefe)
+        // recompensas
         const reward = (6 + Math.floor(this.waveIndex * 0.6)) * (e.isBoss ? 10 : 1) * this.getDiffMultipliers(this.diff).goldGain;
         this.gold += Math.round(reward);
         this.goldText.setText(`🪙 ${this.gold}`);
         try { if (!this.muted) this.sound.play('coin', { volume: 0.25 }); } catch {}
+        this.refreshHotbar();
+
+        this.waveKilled++; this.refreshWaveBar();
       }
 
       this.recycleProjectile(proj);
@@ -576,40 +701,43 @@ function createSceneClass() {
     openTowerMenu(t: { sprite: any; model: TowerModel; last: number; level: number }) {
       // eliminar menús anteriores
       this.children.list
-        .filter((o: any) => o?.getData && o.getData('ui'))
+        .filter((o: any) => o?.getData && o.getData('menu'))
         .forEach((o: any) => o.destroy());
 
       const x = t.sprite.x, y = t.sprite.y - 46;
-      const box = this.add.container(x, y).setDepth(1600).setData('ui', true);
-      const bg = this.add.rectangle(0,0,140,64,0x102030,0.95).setStrokeStyle(1,0x7fb1ff).setOrigin(0.5).setData('ui', true);
+      const box = this.add.container(x, y).setDepth(1600).setData('menu', true);
+      const bg = this.add.rectangle(0,0,140,64,0x102030,0.95).setStrokeStyle(1,0x7fb1ff).setOrigin(0.5).setData('menu', true);
       const lvl = t.level;
       const upCost = Math.round(t.model.cost * (0.8 + 0.8*lvl));
       const sell = Math.round(t.model.cost * (0.6 + 0.2*(lvl-1)));
 
       const txt = this.add.text(0,-20, `Lvl ${lvl}\nUpgrade: ${upCost} 🪙\nSell: ${sell} 🪙`, {
         fontFamily:'monospace', fontSize:'12px', color:'#cfe8ff', align:'center'
-      }).setOrigin(0.5).setData('ui', true);
+      }).setOrigin(0.5).setData('menu', true);
 
-      const btnUp = this.add.rectangle(-35,16,70,22,0x1e3b1f,0.95).setStrokeStyle(1,0x8fff9d).setData('ui', true);
-      const txUp  = this.add.text(-35,16,'Upgrade',{fontFamily:'monospace',fontSize:'11px',color:'#aef5bb'}).setOrigin(0.5).setData('ui', true);
-      const btnSel= this.add.rectangle(35,16,70,22,0x3b1e1e,0.95).setStrokeStyle(1,0xff9c9c).setData('ui', true);
-      const txSel = this.add.text(35,16,'Vender',{fontFamily:'monospace',fontSize:'11px',color:'#ffd6d6'}).setOrigin(0.5).setData('ui', true);
+      const btnUp = this.add.rectangle(-35,16,70,22,0x1e3b1f,0.95).setStrokeStyle(1,0x8fff9d).setData('menu', true);
+      const txUp  = this.add.text(-35,16,'Upgrade',{fontFamily:'monospace',fontSize:'11px',color:'#aef5bb'}).setOrigin(0.5).setData('menu', true);
+      const btnSel= this.add.rectangle(35,16,70,22,0x3b1e1e,0.95).setStrokeStyle(1,0xff9c9c).setData('menu', true);
+      const txSel = this.add.text(35,16,'Vender',{fontFamily:'monospace',fontSize:'11px',color:'#ffd6d6'}).setOrigin(0.5).setData('menu', true);
 
-      [btnUp, btnSel].forEach(b => b.setInteractive({ cursor:'pointer' }));
+      [btnUp, btnSel, bg, txt, txUp, txSel].forEach(b => (b as any).setInteractive?.({ cursor:'pointer' }));
+
       btnUp.on('pointerup', () => {
         if (this.gold >= upCost) {
           this.gold -= upCost; this.goldText.setText(`🪙 ${this.gold}`);
           t.level++;
-          // feedback
           this.cameras.main.flash(80, 40, 140, 70);
+          this.refreshHotbar();
         }
         box.destroy();
       });
       btnSel.on('pointerup', () => {
         this.gold += sell; this.goldText.setText(`🪙 ${this.gold}`);
-        this.blockedTiles.delete(this.tileKey(Math.floor(t.sprite.x/this.map.tileSize), Math.floor(t.sprite.y/this.map.tileSize)));
+        const tx = Math.floor(t.sprite.x/this.map.tileSize), ty = Math.floor(t.sprite.y/this.map.tileSize);
+        this.blockedTiles.delete(this.tileKey(tx, ty));
         t.sprite.destroy();
         this.towers = this.towers.filter(T => T !== t);
+        this.refreshHotbar();
         box.destroy();
       });
 
@@ -729,6 +857,10 @@ function createSceneClass() {
             const model = GROUPS[t.fam as FamKey].find(m => m.frame === t.frame) || GROUPS[t.fam as FamKey][0];
             const spr = this.add.image(t.x, t.y, 'towers', model.frame).setDepth(300).setData('tower', true).setInteractive({cursor:'pointer'});
             this.towers.push({ sprite: spr, model, last: 0, level: t.level || 1 });
+
+            const tx = Math.floor(t.x/this.map.tileSize), ty = Math.floor(t.y/this.map.tileSize);
+            this.blockedTiles.add(this.tileKey(tx, ty));
+
             spr.on('pointerover', () => {
               this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(this.getRange(spr));
               const dps = this.getDPS(spr).toFixed(1);
@@ -780,8 +912,8 @@ export default function BattleClient() {
         Fluent Tower Defense — MVP++
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>4</b>=🛡 · <b>←/→</b> cambia skin ·
-        <b> Espacio</b> pausa · <b>F</b> x2 · <b>ENTER</b> inicia oleada ·
+        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>4</b>=atajo ⚡ 4ª · <b>←/→</b> cambia skin ·
+        <b> Espacio</b> pausa · <b>F</b> x2 · <b>ENTER</b> inicia ·
         Click torre para <b>Upgrade/Vender</b> · Query: <code>?map=grass_dual&diff=easy|normal|hard</code>
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
