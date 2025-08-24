@@ -26,7 +26,7 @@ type MapDef = {
   }
 };
 
-type FamKey = 'electric' | 'fire' | 'frost';
+type FamKey = 'electric' | 'fire' | 'frost' | 'nature';
 
 type TowerModel = {
   frame: string;
@@ -35,7 +35,7 @@ type TowerModel = {
   dmg: number;
   range: number;
   cd: number;
-  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard';
+  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard' | 'Poison Dart';
   chain?: { hops: number; falloff: number };
   slow?: { factor: number; ms: number };
   dot?: { dps: number; ms: number };
@@ -63,7 +63,19 @@ const FROST: TowerModel[] = [
   { frame: 'Frost Cannon III',  fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
   { frame: 'Absolute Zero V',   fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
 ];
-const GROUPS: Record<FamKey, TowerModel[]> = { electric: ELECTRIC, fire: FIRE, frost: FROST };
+/** 🌿 Nature: veneno (DoT) + pequeño slow */
+const NATURE: TowerModel[] = [
+  { frame: 'Thorn Vine I',      fam: 'nature', cost: 45,  dmg: 12, range: 180, cd: 620, projectile: 'Poison Dart', dot: { dps: 7,  ms: 1400 }, slow: { factor: 0.9, ms: 600 } },
+  { frame: 'Entangle Root III', fam: 'nature', cost: 85,  dmg: 20, range: 200, cd: 560, projectile: 'Poison Dart', dot: { dps: 12, ms: 1600 }, slow: { factor: 0.85, ms: 800 } },
+  { frame: 'World Tree V',      fam: 'nature', cost: 140, dmg: 30, range: 220, cd: 520, projectile: 'Poison Dart', dot: { dps: 18, ms: 1800 }, slow: { factor: 0.8, ms: 900 } },
+];
+
+const GROUPS: Record<FamKey, TowerModel[]> = {
+  electric: ELECTRIC,
+  fire: FIRE,
+  frost: FROST,
+  nature: NATURE,
+};
 
 /* ------------------------- Escena de Phaser ------------------------- */
 function createSceneClass() {
@@ -77,7 +89,7 @@ function createSceneClass() {
 
     enemies!: any;
     projectiles!: any;
-    towers: { sprite: any; model: TowerModel; last: number }[] = [];
+    towers: { sprite: any; model: TowerModel; last: number; level: number; totalSpent: number; panel?: any }[] = [];
 
     goldText!: any;
     infoText!: any;
@@ -89,6 +101,12 @@ function createSceneClass() {
     blockedTiles = new Set<string>();
     ready = false;
 
+    // Música
+    bgm!: any;
+
+    // Para evitar colocar torre al pinchar UI
+    clickConsumed = false;
+
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
 
@@ -98,17 +116,17 @@ function createSceneClass() {
       this.load.atlas('ui32',       '/assets/ui_atlas.png',          '/assets/ui_atlas.json');
       this.load.atlas('towers',     '/assets/towers_atlas.png',      '/assets/towers_atlas.json');
       this.load.atlas('enemies32',  '/assets/enemies32_atlas.png',   '/assets/enemies32_atlas.json');
-      this.load.atlas('enemies40',  '/assets/enemies40_atlas.png',   '/assets/enemies40_atlas.json'); // <-- añadir
-      this.load.atlas('enemies48',  '/assets/enemies48_atlas.png',   '/assets/enemies48_atlas.json'); // <-- añadir
+      this.load.atlas('enemies40',  '/assets/enemies40_atlas.png',   '/assets/enemies40_atlas.json');
+      this.load.atlas('enemies48',  '/assets/enemies48_atlas.png',   '/assets/enemies48_atlas.json');
       this.load.atlas('projectiles','/assets/projectiles_atlas.png', '/assets/projectiles_atlas.json');
       this.load.atlas('fx',         '/assets/effects_atlas.png',     '/assets/effects_atlas.json');
 
-      // Audio opcional (admite mp3 o wav; si no existen, sólo verás 404 en consola)
-      try { this.load.audio('coin',  ['/audio/coin.mp3',  '/audio/coin.wav']); } catch {}
-      try { this.load.audio('hit',   ['/audio/hit.mp3',   '/audio/hit.wav']); } catch {}
-      try { this.load.audio('place', ['/audio/place.mp3', '/audio/place.wav']); } catch {}
-      try { this.load.audio('shoot', ['/audio/shoot.mp3','/audio/shoot.wav','/audio/shot.wav']); } catch {}
-      try { this.load.audio('music', ['/audio/music.mp3','/audio/music.wav']); } catch {}
+      // Audio (.wav en /public/audio)
+      try { this.load.audio('coin',  ['/audio/coin.wav',  '/audio/coin.mp3']); } catch {}
+      try { this.load.audio('hit',   ['/audio/hit.wav',   '/audio/hit.mp3']); } catch {}
+      try { this.load.audio('place', ['/audio/place.wav', '/audio/place.mp3']); } catch {}
+      try { this.load.audio('shoot', ['/audio/shot.wav',  '/audio/shoot.mp3']); } catch {}
+      try { this.load.audio('music', ['/audio/music.wav', '/audio/music.mp3']); } catch {}
     }
 
     async create() {
@@ -129,7 +147,7 @@ function createSceneClass() {
 
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · ←/→ cambia skin · Espacio pausa · F x2 · ENTER inicia oleada · Click torre para Upgrade/Vender`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia skin · Espacio pausa · F x2 · Click torre para Upgrade/Vender`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -141,11 +159,19 @@ function createSceneClass() {
       this.rangeCircle = this.add.circle(0, 0, 50, 0x4cc2ff, 0.12)
         .setStrokeStyle(2, 0x4cc2ff, 0.8).setDepth(200).setVisible(false);
 
+      // Música tras primer click (autoplay policy)
+      try {
+        this.bgm = this.sound.add('music', { loop: true, volume: 0.18 });
+        this.input.once('pointerdown', () => { if (!this.bgm.isPlaying) this.bgm.play(); });
+      } catch {}
+
       // Pintar mapa
       this.drawMapFromJSON(this.map);
 
       // Colocar torres
       this.input.on('pointerdown', (p: any) => {
+        if (this.clickConsumed) { this.clickConsumed = false; return; }
+
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
@@ -159,19 +185,14 @@ function createSceneClass() {
         const x = tx * this.map.tileSize + this.map.tileSize / 2;
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
         const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300);
-        this.towers.push({ sprite: spr, model, last: 0 });
+
+        const tower = { sprite: spr, model, last: 0, level: 0, totalSpent: model.cost } as any;
+        this.towers.push(tower);
 
         spr.setInteractive({ cursor: 'pointer' });
-        spr.on('pointerover', () => {
-          this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
-          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-          this.tooltip.setVisible(true).setPosition(spr.x + 18, spr.y - 18)
-            .setText(`T: ${model.frame}\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
-        });
-        spr.on('pointerout', () => {
-          this.rangeCircle.setVisible(false);
-          this.tooltip.setVisible(false);
-        });
+        spr.on('pointerover', () => this.showTowerTooltip(tower));
+        spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
+        spr.on('pointerdown', () => this.openTowerPanel(tower));
       });
 
       // Teclado
@@ -179,13 +200,14 @@ function createSceneClass() {
         if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; }
         if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; }
         if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; }
+        if (e.key === '4') { this.selFam = 'nature';   this.selIdx = 0; }
         if (e.key === 'ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
         if (e.key === 'ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
       });
 
-      // Waves
+      // Waves (auto)
       this.setupWavesFromJSON(this.map);
 
       this.ready = true;
@@ -226,10 +248,10 @@ function createSceneClass() {
         // @ts-ignore
         if (tex && typeof tex.has === 'function' && tex.has(c.frame)) return c;
       }
-      // Último recurso: enemies32 Goblin
       return { key: 'enemies32', frame: 'Goblin Scout' };
     }
 
+    /* ------------------------- Waves ------------------------- */
     setupWavesFromJSON(map: MapDef) {
       this.waveIndex = 0;
       const next = () => {
@@ -250,7 +272,6 @@ function createSceneClass() {
           this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(pathWorld, hp, speed));
         }
 
-        // oleada secundaria (opcional)
         if (this.waveIndex % 3 === 0) {
           const other = map.paths[pathIdx ? 0 : 1].map(pt => ({
             x: pt.x * map.tileSize + map.tileSize / 2,
@@ -293,9 +314,113 @@ function createSceneClass() {
       };
     }
 
-    fireAt(t: { sprite: any; model: TowerModel }, target: any) {
+    /* ----------------------- Combate / torres ----------------------- */
+
+    /** Stats efectivos por nivel */
+    getTowerStats(t: { model: TowerModel; level: number }) {
       const m = t.model;
-      const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', m.projectile).setDepth(200);
+      const L = t.level;
+      const dmgMul = 1 + 0.25 * L;           // +25% daño por nivel
+      const cdMul  = Math.pow(0.92, L);      // -8% CD por nivel
+      const range  = m.range + 12 * L;       // +12 rango por nivel
+      const dmg    = Math.round(m.dmg * dmgMul);
+
+      // Clonar ajustes que escalan
+      const dot = m.dot ? { dps: Math.round(m.dot.dps * dmgMul), ms: m.dot.ms } : undefined;
+      const slow = m.slow ? { factor: Math.max(0.5, m.slow.factor), ms: m.slow.ms + 100 * L } : undefined;
+      const chain = m.chain ? { ...m.chain } : undefined;
+
+      return { dmg, range, cd: Math.max(120, Math.round(m.cd * cdMul)), projectile: m.projectile, fam: m.fam, dot, slow, chain, frame: m.frame };
+    }
+
+    /** Coste de upgrade (geométrico) */
+    getUpgradeCost(t: { model: TowerModel; level: number }) {
+      const base = t.model.cost;
+      return Math.round(base * Math.pow(1.45, t.level + 1)); // L0->1 ~1.45x, etc.
+    }
+
+    /** Reembolso de venta: 70% de lo invertido total */
+    getSellRefund(t: { totalSpent: number }) {
+      return Math.max(1, Math.floor(t.totalSpent * 0.7));
+    }
+
+    showTowerTooltip(t: any) {
+      const s = this.getTowerStats(t);
+      this.rangeCircle.setVisible(true).setPosition(t.sprite.x, t.sprite.y).setRadius(s.range);
+      const dps = (s.dmg * 1000 / s.cd).toFixed(1);
+      this.tooltip
+        .setVisible(true)
+        .setPosition(t.sprite.x + 18, t.sprite.y - 18)
+        .setText(`T: ${s.frame}  Lvl ${t.level}\nDPS ${dps} · Range ${s.range} · CD ${s.cd}ms`);
+    }
+
+    openTowerPanel(t: any) {
+      // Cerrar otros
+      this.towers.forEach(tt => { if (tt !== t) this.closeTowerPanel(tt); });
+
+      if (t.panel && t.panel.active) { this.closeTowerPanel(t); return; }
+
+      const s = this.getTowerStats(t);
+      const upCost = this.getUpgradeCost(t);
+      const refund = this.getSellRefund(t);
+
+      const container = this.add.container(t.sprite.x + 56, t.sprite.y - 6).setDepth(500);
+      const bg = this.add.rectangle(0, 0, 160, 70, 0x0e1420, 0.92).setStrokeStyle(1, 0x6aa0ff, 0.8);
+      const title = this.add.text(-70, -28, `Lvl ${t.level}`, { fontFamily: 'monospace', fontSize: '12px', color: '#9ad0ff' });
+
+      const btnUp = this.add.rectangle(-50, 10, 90, 24, 0x16304a, 0.95).setStrokeStyle(1, 0x8ecbff, 0.9);
+      const txtUp = this.add.text(-86, 3, `Upgrade (${upCost})`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
+
+      const btnSell = this.add.rectangle(48, 10, 60, 24, 0x2d1a1a, 0.95).setStrokeStyle(1, 0xff9c9c, 0.9);
+      const txtSell = this.add.text(20, 3, `Sell +${refund}`, { fontFamily: 'monospace', fontSize: '12px', color: '#ffd6d6' });
+
+      const closeX = this.add.text(66, -32, '✕', { fontFamily: 'monospace', fontSize: '12px', color: '#cbd5ff' });
+
+      [bg, btnUp, btnSell, txtUp, txtSell, title, closeX].forEach(it => { (it as any).setInteractive?.(); });
+
+      container.add([bg, title, btnUp, txtUp, btnSell, txtSell, closeX]);
+
+      const consume = () => { this.clickConsumed = true; this.time.delayedCall(0, () => (this.clickConsumed = false)); };
+
+      btnUp.on('pointerup', () => {
+        consume();
+        const cost = this.getUpgradeCost(t);
+        if (this.gold < cost) return;
+        this.gold -= cost;
+        this.goldText.setText(`🪙 ${this.gold}`);
+        t.level += 1;
+        t.totalSpent += cost;
+        try { this.sound.play('coin', { volume: 0.2 }); } catch {}
+        this.showTowerTooltip(t);
+        this.closeTowerPanel(t); // cierra y fuerza recalcular texto si reabre
+      });
+
+      btnSell.on('pointerup', () => {
+        consume();
+        const refundVal = this.getSellRefund(t);
+        this.gold += refundVal;
+        this.goldText.setText(`🪙 ${this.gold}`);
+        try { this.sound.play('coin', { volume: 0.25 }); } catch {}
+        t.sprite.destroy();
+        this.closeTowerPanel(t);
+        this.towers = this.towers.filter((x: any) => x !== t);
+        this.rangeCircle.setVisible(false);
+        this.tooltip.setVisible(false);
+      });
+
+      closeX.on('pointerup', () => { consume(); this.closeTowerPanel(t); });
+
+      t.panel = container;
+    }
+
+    closeTowerPanel(t: any) {
+      if (t.panel && t.panel.active) t.panel.destroy();
+      t.panel = undefined;
+    }
+
+    fireAt(t: { sprite: any; model: TowerModel; level: number }, target: any) {
+      const s = this.getTowerStats(t);
+      const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', s.projectile).setDepth(200);
       this.projectiles.add(p);
       (p as any).vx = (target.x - p.x);
       (p as any).vy = (target.y - p.y);
@@ -303,11 +428,11 @@ function createSceneClass() {
       const speed = 520;
       (p as any).vx = (p as any).vx / len * speed * (1 / 60);
       (p as any).vy = (p as any).vy / len * speed * (1 / 60);
-      (p as any).dmg = m.dmg;
-      (p as any).fam = m.fam;
-      (p as any).slow = m.slow;
-      (p as any).dot  = m.dot;
-      (p as any).chain= m.chain;
+      (p as any).dmg = s.dmg;
+      (p as any).fam = s.fam;
+      (p as any).slow = s.slow;
+      (p as any).dot  = s.dot;
+      (p as any).chain= s.chain;
       (p as any).ttl = 900;
 
       try { this.sound.play('shoot', { volume: 0.25 }); } catch {}
@@ -360,7 +485,7 @@ function createSceneClass() {
         e.speed = old * slowFactor;
         this.time.delayedCall(slowMs, () => e && (e.speed = old));
       }
-      if (fam === 'fire' && proj.dot) {
+      if ((fam === 'fire' || fam === 'nature') && proj.dot) {
         const dotDps: number = proj.dot.dps;
         const dotMs: number = proj.dot.ms;
         const ticks = Math.floor(dotMs / 300);
@@ -394,14 +519,15 @@ function createSceneClass() {
       this.enemies.getChildren().forEach((e: any) => e?.updateTick?.());
 
       for (const t of this.towers) {
-        if (time < t.last + t.model.cd) continue;
+        const s = this.getTowerStats(t);
+        if (time < t.last + s.cd) continue;
 
         let best: any = null;
         let bestD = 1e9;
         this.enemies.getChildren().forEach((c: any) => {
           if (!c || !c.active) return;
           const d = PhaserLib.Math.Distance.Between(t.sprite.x, t.sprite.y, c.x, c.y);
-          if (d < t.model.range && d < bestD) { best = c; bestD = d; }
+          if (d < s.range && d < bestD) { best = c; bestD = d; }
         });
         if (best) {
           t.last = time;
@@ -462,9 +588,8 @@ export default function BattleClient() {
         Fluent Tower Defense — MVP+
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>←/→</b> cambia skin ·
-        <b> Espacio</b> pausa · <b>F</b> x2 · <b>ENTER</b> inicia oleada ·
-        Click torre para <b>Upgrade/Vender</b>
+        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ / <b>4</b>=🌿 · <b>←/→</b> cambia skin ·
+        <b> Espacio</b> pausa · <b>F</b> x2 · Click torre para <b>Upgrade/Vender</b>
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
       {!mounted && <div style={{ color: '#99a', fontFamily: 'monospace', marginTop: 8 }}>Cargando…</div>}
