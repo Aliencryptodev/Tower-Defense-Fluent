@@ -71,9 +71,9 @@ const FROST: TowerModel[] = [
 
 // 🌿 NATURE / VENENO (usa frames conocidos tintados en verde para evitar __MISSING__)
 const NATURE: TowerModel[] = [
-  { frame: 'Ice Shard I',       fam: 'nature', cost: 45,  dmg: 12, range: 170, cd: 620, projectile: 'Poison Dart', dot: { dps: 8,  ms: 1800 }, tint: 0x66cc66 },
-  { frame: 'Frost Cannon III',  fam: 'nature', cost: 85,  dmg: 18, range: 190, cd: 560, projectile: 'Poison Dart', dot: { dps: 14, ms: 2200 }, tint: 0x55aa55 },
-  { frame: 'Absolute Zero V',   fam: 'nature', cost: 140, dmg: 26, range: 210, cd: 520, projectile: 'Poison Dart', dot: { dps: 22, ms: 2600 }, tint: 0x44aa44 },
+  { frame: 'Thorn Vine I',       fam: 'nature', cost: 45,  dmg: 12, range: 170, cd: 620, projectile: 'Poison Dart', dot: { dps: 8,  ms: 1800 } },
+  { frame: 'Entangle Root III',  fam: 'nature', cost: 85,  dmg: 18, range: 190, cd: 560, projectile: 'Poison Dart', dot: { dps: 14, ms: 2200 } },
+  { frame: 'World Tree V',       fam: 'nature', cost: 140, dmg: 26, range: 210, cd: 520, projectile: 'Poison Dart', dot: { dps: 22, ms: 2600 } },
 ];
 
 const GROUPS: Record<FamKey, TowerModel[]> = {
