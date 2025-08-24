@@ -1,0 +1,26 @@
+{
+  "name": "lava_twins",
+  "tileSize": 64,
+  "width": 14,
+  "height": 10,
+  "terrain": "Grass Path",
+  "buildMask": [
+    { "x": 0, "y": 4, "w": 14, "h": 2 }
+  ],
+  "paths": [
+    [
+      { "x": 0, "y": 2 }, { "x": 4, "y": 2 }, { "x": 4, "y": 1 },
+      { "x": 9, "y": 1 }, { "x": 9, "y": 2 }, { "x": 13, "y": 2 }
+    ],
+    [
+      { "x": 0, "y": 7 }, { "x": 4, "y": 7 }, { "x": 4, "y": 8 },
+      { "x": 9, "y": 8 }, { "x": 9, "y": 7 }, { "x": 13, "y": 7 }
+    ]
+  ],
+  "waves": {
+    "baseCount": 6, "countPerWave": 2,
+    "baseHP": 46, "hpPerWave": 15,
+    "baseSpeed": 62, "speedPerWave": 5,
+    "spawnDelayMs": 400, "rewardBase": 7
+  }
+}
