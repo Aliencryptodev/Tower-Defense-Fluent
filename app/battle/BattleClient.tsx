@@ -26,7 +26,7 @@ type MapDef = {
   }
 };
 
-type FamKey = 'electric' | 'fire' | 'frost' | 'nature';
+type FamKey = 'electric' | 'fire' | 'frost';
 
 type TowerModel = {
   frame: string;
@@ -35,11 +35,13 @@ type TowerModel = {
   dmg: number;
   range: number;
   cd: number;
-  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard' | 'Poison Dart';
+  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard';
   chain?: { hops: number; falloff: number };
   slow?: { factor: number; ms: number };
   dot?: { dps: number; ms: number };
 };
+
+type Difficulty = 'easy'|'normal'|'hard';
 
 async function loadMapDef(name: string): Promise<MapDef> {
   const res = await fetch(`/maps/${name}.json`, { cache: 'no-store' });
@@ -52,30 +54,24 @@ const ELECTRIC: TowerModel[] = [
   { frame: 'Arc Coil I',     fam: 'electric', cost: 45,  dmg: 18, range: 190, cd: 700, projectile: 'Lightning Bolt', chain: { hops: 2, falloff: 0.7 } },
   { frame: 'Tesla Grid III', fam: 'electric', cost: 85,  dmg: 30, range: 210, cd: 620, projectile: 'Lightning Bolt', chain: { hops: 3, falloff: 0.7 } },
   { frame: 'Storm Lord V',   fam: 'electric', cost: 140, dmg: 48, range: 230, cd: 540, projectile: 'Lightning Bolt', chain: { hops: 4, falloff: 0.7 } },
+  // 4ª torre: “Reality Rift V” (eléctrica end-game, más alcance, menos CD)
+  { frame: 'Reality Rift V', fam: 'electric', cost: 200, dmg: 52, range: 260, cd: 480, projectile: 'Lightning Bolt', chain: { hops: 5, falloff: 0.75 } },
 ];
 const FIRE: TowerModel[] = [
   { frame: 'Flame Turret I',   fam: 'fire', cost: 45,  dmg: 14, range: 150, cd: 600, projectile: 'Fireball',   dot: { dps: 6,  ms: 1200 } },
   { frame: 'Inferno Core III', fam: 'fire', cost: 85,  dmg: 22, range: 165, cd: 520, projectile: 'Fireball',   dot: { dps: 10, ms: 1400 } },
   { frame: 'Phoenix Gate V',   fam: 'fire', cost: 140, dmg: 30, range: 180, cd: 480, projectile: 'Fireball',   dot: { dps: 16, ms: 1600 } },
+  // 4ª torre: “Inferno+” (mucha quemadura)
+  { frame: 'Inferno Citadel V', fam: 'fire', cost: 200, dmg: 36, range: 190, cd: 450, projectile: 'Fireball', dot: { dps: 22, ms: 1700 } },
 ];
 const FROST: TowerModel[] = [
   { frame: 'Ice Shard I',       fam: 'frost', cost: 45,  dmg: 16, range: 180, cd: 640, projectile: 'Ice Shard', slow: { factor: 0.7, ms: 1200 } },
   { frame: 'Frost Cannon III',  fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
   { frame: 'Absolute Zero V',   fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
+  // 4ª torre: “World Tree V” (mucho slow, menos daño)
+  { frame: 'World Tree V',      fam: 'frost', cost: 200, dmg: 34, range: 240, cd: 500, projectile: 'Ice Shard', slow: { factor: 0.45, ms: 1900 } },
 ];
-/** 🌿 Nature */
-const NATURE: TowerModel[] = [
-  { frame: 'Thorn Vine I',      fam: 'nature', cost: 45,  dmg: 12, range: 180, cd: 620, projectile: 'Poison Dart', dot: { dps: 7,  ms: 1400 }, slow: { factor: 0.9, ms: 600 } },
-  { frame: 'Entangle Root III', fam: 'nature', cost: 85,  dmg: 20, range: 200, cd: 560, projectile: 'Poison Dart', dot: { dps: 12, ms: 1600 }, slow: { factor: 0.85, ms: 800 } },
-  { frame: 'World Tree V',      fam: 'nature', cost: 140, dmg: 30, range: 220, cd: 520, projectile: 'Poison Dart', dot: { dps: 18, ms: 1800 }, slow: { factor: 0.8, ms: 900 } },
-];
-
-const GROUPS: Record<FamKey, TowerModel[]> = {
-  electric: ELECTRIC,
-  fire: FIRE,
-  frost: FROST,
-  nature: NATURE,
-};
+const GROUPS: Record<FamKey, TowerModel[]> = { electric: ELECTRIC, fire: FIRE, frost: FROST };
 
 /* ------------------------- Escena de Phaser ------------------------- */
 function createSceneClass() {
@@ -83,52 +79,48 @@ function createSceneClass() {
 
   return class TD extends Phaser.Scene {
     map!: MapDef;
-    gold = 320;
-    waveIndex = 0;
-    laneToggle = 0;
 
+    // Economía / progreso
+    gold = 320;
+    lives = 20;
+    waveIndex = 0;
+    maxWaves = 20;
+    laneToggle = 0;
+    diff: Difficulty = 'normal';
+
+    // Flags
+    ready = false;
+    waveRunning = false;
+    gameOver = false;
+    muted = false;
+
+    // Grupos / entidades
     enemies!: any;
     projectiles!: any;
+    projPool: any[] = []; // pooling simple
+    towers: { sprite: any; model: TowerModel; last: number; level: number }[] = [];
 
-    towers: {
-      sprite: any; model: TowerModel; last: number; level: number; totalSpent: number;
-      panel?: any;
-    }[] = [];
-
+    // UI
     goldText!: any;
+    livesText!: any;
     infoText!: any;
+    waveText!: any;
     tooltip!: any;
     rangeCircle!: any;
 
-    // HUD
-    hud!: any;
-    hudFamBtns: any[] = [];
-    hudVarBtns: any[] = [];
-
-    // Wave UI
-    waveText!: any;
-    waveBtn!: any;
-    waveBtnLabel!: any;
-    waveRunning = false;
-    lastWaveSpawnFinishAt = 0;
-
-    // Preview colocación
-    previewRect!: any;
-    previewGhost!: any;
-    previewText!: any;
-
+    // selección
     selFam: FamKey = 'electric';
     selIdx = 0;
-    blockedTiles = new Set<string>();   // caminos/zonas bloqueadas
-    occupiedTiles = new Set<string>();  // tiles ocupados por torres
-    ready = false;
+    blockedTiles = new Set<string>();
 
-    // Música
-    bgm!: any;
+    // control spawn/fin de ola
+    lastWaveSpawnFinishAt = 0;
 
+    /* -------------------- util -------------------- */
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
 
+    /* -------------------- preload -------------------- */
     preload() {
       // Atlases
       this.load.atlas('terrain64',  '/assets/terrain_atlas.png',     '/assets/terrain_atlas.json');
@@ -137,36 +129,53 @@ function createSceneClass() {
       this.load.atlas('enemies32',  '/assets/enemies32_atlas.png',   '/assets/enemies32_atlas.json');
       this.load.atlas('enemies40',  '/assets/enemies40_atlas.png',   '/assets/enemies40_atlas.json');
       this.load.atlas('enemies48',  '/assets/enemies48_atlas.png',   '/assets/enemies48_atlas.json');
+      this.load.atlas('enemies64',  '/assets/enemies64_atlas.png',   '/assets/enemies64_atlas.json');
       this.load.atlas('projectiles','/assets/projectiles_atlas.png', '/assets/projectiles_atlas.json');
       this.load.atlas('fx',         '/assets/effects_atlas.png',     '/assets/effects_atlas.json');
 
-      // Audio (.wav en /public/audio)
-      try { this.load.audio('coin',  ['/audio/coin.wav',  '/audio/coin.mp3']); } catch {}
-      try { this.load.audio('hit',   ['/audio/hit.wav',   '/audio/hit.mp3']); } catch {}
-      try { this.load.audio('place', ['/audio/place.wav', '/audio/place.mp3']); } catch {}
-      try { this.load.audio('shoot', ['/audio/shot.wav',  '/audio/shoot.mp3']); } catch {}
-      try { this.load.audio('music', ['/audio/music.wav', '/audio/music.mp3']); } catch {}
+      // Audio (si no existen, aparecerá 404 innocuo)
+      try { this.load.audio('coin',  ['/audio/coin.mp3',  '/audio/coin.wav']); } catch {}
+      try { this.load.audio('hit',   ['/audio/hit.mp3',   '/audio/hit.wav']); } catch {}
+      try { this.load.audio('place', ['/audio/place.mp3', '/audio/place.wav']); } catch {}
+      try { this.load.audio('shoot', ['/audio/shoot.mp3','/audio/shoot.wav','/audio/shot.wav']); } catch {}
+      try { this.load.audio('music', ['/audio/music.mp3','/audio/music.wav']); } catch {}
     }
 
+    /* -------------------- create -------------------- */
     async create() {
-      // Grupos antes de cualquier await
+      // dificultad desde query
+      const url = new URL(window.location.href);
+      this.diff = (url.searchParams.get('diff') as Difficulty) || 'normal';
+
+      const diffMul = this.getDiffMultipliers(this.diff);
+      this.gold = Math.round(this.gold * diffMul.gold);
+      this.lives = Math.round(this.lives * diffMul.lives);
+
+      // Grupos
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
       // Cargar mapa
-      const url = new URL(window.location.href);
       const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi, '');
       this.map = await loadMapDef(mapName);
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      // UI superior
+      // UI
       this.goldText = this.add.text(16, 16, `🪙 ${this.gold}`, {
         color: '#ffd76a', fontFamily: 'monospace', fontSize: '18px'
       }).setDepth(1000);
 
+      this.livesText = this.add.text(120, 16, `❤️ ${this.lives}`, {
+        color: '#ff8080', fontFamily: 'monospace', fontSize: '18px'
+      }).setDepth(1000);
+
+      this.waveText = this.add.text(220, 16, `🧠 Wave 0`, {
+        color: '#d9f', fontFamily: 'monospace', fontSize: '18px'
+      }).setDepth(1000);
+
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia variante · Espacio pausa · F x2 · ENTER inicia oleada`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · 4=🛡 · ←/→ cambia skin · Espacio pausa · F x2 · ENTER inicia oleada · Click torre para Upgrade/Vender`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -178,341 +187,102 @@ function createSceneClass() {
       this.rangeCircle = this.add.circle(0, 0, 50, 0x4cc2ff, 0.12)
         .setStrokeStyle(2, 0x4cc2ff, 0.8).setDepth(200).setVisible(false);
 
-      // Música tras primer click (autoplay policy)
-      try {
-        this.bgm = this.sound.add('music', { loop: true, volume: 0.18 });
-        this.input.once('pointerdown', () => { if (!this.bgm.isPlaying) this.bgm.play(); });
-      } catch {}
-
       // Pintar mapa
       this.drawMapFromJSON(this.map);
 
-      // HUD
-      this.createHUD();
+      // Botonera táctil (mute/pause/x2/next)
+      this.buildTouchUI();
 
-      // Preview de colocación
-      this.createPlacementPreview();
+      // Colocar torres / abrir menú si clicas sobre una
+      this.input.on('pointerdown', (p: any) => {
+        if (this.gameOver) return;
 
-      // Wave UI (manual)
-      this.createWaveControls();
+        const objects = this.input.hitTestPointer(p);
+        const towerObj = objects.find((o: any) => o?.getData && o.getData('tower'));
+        if (towerObj) { // abrir menú de esa torre
+          const t = this.towers.find(T => T.sprite === towerObj);
+          if (t) this.openTowerMenu(t);
+          return;
+        }
 
-      // Handler global de colocar torres — con hit-test para NO colocar sobre UI/torre
-      this.input.on('pointerdown', (pointer: any) => {
-        if (this.isPointerOnUI(pointer)) return;
+        // colocar torre si clicas suelo libre
+        const model = GROUPS[this.selFam][this.selIdx % GROUPS[this.selFam].length];
+        const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
+        if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
+        if (this.blockedTiles.has(this.tileKey(tx, ty))) return;
+        if (this.gold < model.cost) return;
 
-        const model = GROUPS[this.selFam][this.selIdx];
-        const { tx, ty } = this.worldToTile(pointer.worldX, pointer.worldY);
-        if (!this.canPlaceAt(tx, ty, model.cost)) return;
-
-        // pagar y colocar
         this.gold -= model.cost;
         this.goldText.setText(`🪙 ${this.gold}`);
-        try { this.sound.play('place', { volume: 0.4 }); } catch {}
+        try { if (!this.muted) this.sound.play('place', { volume: 0.4 }); } catch {}
 
         const x = tx * this.map.tileSize + this.map.tileSize / 2;
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
-        const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300);
-        spr.setData('tower', true);
-        const key = this.tileKey(tx, ty);
-        spr.setData('tileKey', key);
-
-        const tower = { sprite: spr, model, last: 0, level: 0, totalSpent: model.cost } as any;
-        this.towers.push(tower);
-        this.occupiedTiles.add(key);
+        const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300).setData('tower', true);
+        this.towers.push({ sprite: spr, model, last: 0, level: 1 });
 
         spr.setInteractive({ cursor: 'pointer' });
-        spr.on('pointerover', () => this.showTowerTooltip(tower));
-        spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
-        // detener propagación
-        spr.on('pointerdown', (_p: any, _lx: number, _ly: number, event: any) => {
-          event?.stopPropagation?.();
-          this.openTowerPanel(tower);
+        spr.on('pointerover', () => {
+          this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(this.getRange(spr));
+          const dps = this.getDPS(spr).toFixed(1);
+          this.tooltip.setVisible(true).setPosition(spr.x + 18, spr.y - 18)
+            .setText(`T: ${model.frame} | lvl ${this.getLevel(spr)}\nDPS ${dps} · Range ${this.getRange(spr)} · CD ${this.getCd(spr)}ms`);
         });
-
-        // refrescar preview (por si el oro cambió)
-        this.updatePlacementPreview(pointer);
+        spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
       });
-
-      // Seguir el ratón con el preview
-      this.input.on('pointermove', (p: any) => this.updatePlacementPreview(p));
 
       // Teclado
       this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
-        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; this.refreshHUD(); }
-        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; this.refreshHUD(); }
-        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; this.refreshHUD(); }
-        if (e.key === '4') { this.selFam = 'nature';   this.selIdx = 0; this.refreshHUD(); }
-        if (e.key === 'ArrowLeft')  { this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
-        if (e.key === 'ArrowRight') { this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
+        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; }
+        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; }
+        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; }
+        if (e.key === '4') { this.selFam = 'electric'; this.selIdx = 3; } // atajo a la 4ª
+        if (e.key === 'ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
+        if (e.key === 'ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
         if (e.code === 'Enter') this.startNextWave();
+        if (e.key.toLowerCase() === 'm') this.toggleMute();
       });
 
-      // Sin auto-waves: empiezas con botón/Enter
+      // Música de fondo (opcional)
+      try { const m = this.sound.add('music', { loop: true, volume: 0.18 }); if (!this.muted) m.play(); } catch {}
+
+      // Autoload desde localStorage
+      this.tryRestore();
+
       this.ready = true;
       this.updateWaveUI();
     }
 
-    /* ----------------------- HUD ----------------------- */
-    createHUD() {
-      if (this.hud) this.hud.destroy();
+    /* ------------------- helpers UI ------------------- */
+    buildTouchUI() {
+      const pad = 8;
+      const w = this.scale.width;
+      const y = 16;
 
-      const famIcons: { fam: FamKey; frame: string; label: string }[] = [
-        { fam: 'electric', frame: 'Arc Coil I',     label: '⚡' },
-        { fam: 'fire',     frame: 'Flame Turret I', label: '🔥' },
-        { fam: 'frost',    frame: 'Ice Shard I',    label: '❄' },
-        { fam: 'nature',   frame: 'Thorn Vine I',   label: '🌿' },
-      ];
+      const mkBtn = (label: string, x: number, on: () => void) => {
+        const r = this.add.rectangle(x, y, 28, 18, 0x202a36, 0.85).setOrigin(0,0).setStrokeStyle(1, 0x7fb1ff, 0.9).setDepth(1500);
+        const t = this.add.text(x+4, y+2, label, { fontFamily: 'monospace', fontSize: '11px', color: '#cfe8ff' }).setDepth(1500);
+        r.setInteractive(); r.on('pointerup', on);
+      };
 
-      const baseX = 16;
-      const baseY = 58;
-
-      const hud = this.add.container(baseX, baseY).setDepth(900);
-      const bg = this.add.rectangle(0, 0, 520, 98, 0x0e1420, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x4b6fb1, 0.6);
-      bg.setData('ui', true).setInteractive();
-      hud.add(bg);
-
-      // fila 1: familias
-      this.hudFamBtns = [];
-      famIcons.forEach((fi, i) => {
-        const bx = 12 + i * 128;
-        const by = 10;
-        const tile = this.add.rectangle(bx, by, 116, 28, 0x17253a, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x7fb1ff, 0.7);
-        tile.setData('ui', true).setInteractive();
-        const icon = this.add.image(bx + 14, by + 14, 'towers', fi.frame).setScale(0.45).setOrigin(0, 0.5);
-        const txt  = this.add.text(bx + 40, by + 6, `${fi.label}  ${fi.fam}`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
-        icon.setData('ui', true); txt.setData('ui', true);
-        [tile, icon, txt].forEach(el => hud.add(el));
-
-        tile.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => {
-          ev?.stopPropagation?.();
-          this.selFam = fi.fam; this.selIdx = 0;
-          this.refreshHUD();
-        });
-        icon.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
-        txt.on('pointerup',  (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
-
-        this.hudFamBtns.push({ tile, icon, txt, fam: fi.fam });
-      });
-
-      // fila 2: variantes + coste/DPS
-      this.hudVarBtns = [];
-      for (let i = 0; i < 3; i++) {
-        const bx = 12 + i * 170;
-        const by = 46;
-        const tile = this.add.rectangle(bx, by, 160, 40, 0x152232, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x6aa0ff, 0.65);
-        tile.setData('ui', true).setInteractive();
-        const icon = this.add.image(bx + 14, by + 20, 'towers', 'Arc Coil I').setScale(0.5).setOrigin(0, 0.5);
-        icon.setData('ui', true);
-        const nameTxt  = this.add.text(bx + 46, by + 4, `Var`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
-        nameTxt.setData('ui', true);
-
-        const goldIcon = this.add.image(bx + 46, by + 26, 'ui32', 'icon_gold').setScale(0.5).setOrigin(0, 0.5);
-        goldIcon.setData('ui', true);
-        const costTxt  = this.add.text(bx + 62, by + 18, `0`, { fontFamily: 'monospace', fontSize: '12px', color: '#ffd76a' });
-        costTxt.setData('ui', true);
-
-        const enIcon = this.add.image(bx + 98, by + 26, 'ui32', 'icon_energy').setScale(0.5).setOrigin(0, 0.5);
-        enIcon.setData('ui', true);
-        const dpsTxt  = this.add.text(bx + 114, by + 18, `0`, { fontFamily: 'monospace', fontSize: '12px', color: '#9ad0ff' });
-        dpsTxt.setData('ui', true);
-
-        [tile, icon, nameTxt, goldIcon, costTxt, enIcon, dpsTxt].forEach(el => hud.add(el));
-
-        tile.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => {
-          ev?.stopPropagation?.();
-          this.selIdx = i;
-          this.refreshHUD();
-        });
-        icon.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
-        nameTxt.on('pointerup',  (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
-
-        this.hudVarBtns.push({ tile, icon, nameTxt, costTxt, dpsTxt, idx: i });
-      }
-
-      this.hud = hud;
-      this.refreshHUD();
+      mkBtn('⏸/▶', w - (4*48) - pad, () => { this.scene.isPaused() ? this.scene.resume() : this.scene.pause(); });
+      mkBtn('x2',  w - (3*48) - pad, () => { this.time.timeScale = this.time.timeScale === 1 ? 2 : 1; });
+      mkBtn('Next',w - (2*48) - pad, () => { this.startNextWave(); });
+      mkBtn(this.muted ? '🔇' : '🔊', w - (1*48) - pad, () => this.toggleMute());
     }
 
-    refreshHUD() {
-      // resaltar familia activa
-      this.hudFamBtns.forEach(b => {
-        const active = b.fam === this.selFam;
-        b.tile.setFillStyle(active ? 0x20324c : 0x17253a, active ? 0.95 : 0.8);
-      });
-
-      // actualizar variantes según familia
-      const list = GROUPS[this.selFam];
-      this.hudVarBtns.forEach((b, i) => {
-        const model = list[i];
-        const exists = !!model;
-        [b.tile, b.icon, b.nameTxt, b.costTxt, b.dpsTxt].forEach((el: any) => el.setVisible(exists));
-        if (exists) {
-          b.icon.setTexture('towers', model.frame);
-          b.nameTxt.setText(model.frame);
-          b.costTxt.setText(String(model.cost));
-          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-          b.dpsTxt.setText(dps);
-          const active = this.selIdx === i;
-          b.tile.setFillStyle(active ? 0x20324c : 0x152232, active ? 0.95 : 0.85);
-        }
-      });
-    }
-
-    /* ------------------ Wave UI y lógica manual ------------------ */
-    createWaveControls() {
-      // Texto Wave
-      this.waveText = this.add.text(320, 16, `Wave ${this.waveIndex}`, {
-        fontFamily: 'monospace', fontSize: '16px', color: '#cfe8ff'
-      }).setDepth(1000);
-
-      // Botón Next Wave
-      const bx = 480, by = 12;
-      const btn = this.add.container(bx, by).setDepth(1000);
-      const bg = this.add.rectangle(0, 0, 180, 24, 0x142338, 0.9).setOrigin(0, 0).setStrokeStyle(1, 0x7fb1ff, 0.8);
-      bg.setInteractive().setData('ui', true);
-      const label = this.add.text(10, 4, '[ ▶  Siguiente Oleada ]', { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
-      label.setData('ui', true);
-      btn.add([bg, label]);
-      btn.setData('ui', true);
-
-      btn.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); this.startNextWave(); });
-
-      this.waveBtn = btn;
-      this.waveBtnLabel = label;
+    toggleMute() {
+      this.muted = !this.muted;
+      this.sound.mute = this.muted;
     }
 
     updateWaveUI() {
-      this.waveText?.setText(`Wave ${this.waveIndex}`);
-      if (!this.waveBtnLabel) return;
-      if (this.waveRunning) {
-        this.waveBtnLabel.setText('[ ⏳  Oleada en curso ]');
-        this.waveBtn?.setAlpha(0.6);
-      } else {
-        this.waveBtnLabel.setText('[ ▶  Siguiente Oleada ]');
-        this.waveBtn?.setAlpha(1);
-      }
+      this.waveText?.setText(`🧠 Wave ${this.waveIndex}`);
     }
 
-    computeParamsForWave(index: number) {
-      const W = this.map.waves;
-      return {
-        count: W.baseCount + index * W.countPerWave,
-        hp:    W.baseHP    + index * W.hpPerWave,
-        speed: W.baseSpeed + index * W.speedPerWave,
-        delay: W.spawnDelayMs
-      };
-    }
-
-    startNextWave() {
-      if (this.waveRunning) return;
-      this.waveRunning = true;
-      this.waveIndex += 1;
-      this.updateWaveUI();
-
-      const { count, hp, speed, delay } = this.computeParamsForWave(this.waveIndex);
-      const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
-      const pathTiles = this.map.paths[pathIdx];
-      const pathWorld = pathTiles.map(pt => ({
-        x: pt.x * this.map.tileSize + this.map.tileSize / 2,
-        y: pt.y * this.map.tileSize + this.map.tileSize / 2,
-      }));
-
-      for (let i = 0; i < count; i++) {
-        this.time.delayedCall(i * delay, () => this.spawnEnemy(pathWorld, hp, speed));
-      }
-
-      // oleada secundaria opcional cada 3
-      if (this.waveIndex % 3 === 0) {
-        const other = this.map.paths[pathIdx ? 0 : 1].map(pt => ({
-          x: pt.x * this.map.tileSize + this.map.tileSize / 2,
-          y: pt.y * this.map.tileSize + this.map.tileSize / 2,
-        }));
-        for (let i = 0; i < Math.floor(count * 0.7); i++) {
-          this.time.delayedCall(i * delay, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed));
-        }
-      }
-
-      // momento en el que habrá terminado el último spawn
-      this.lastWaveSpawnFinishAt = this.time.now + count * delay + 2000;
-
-      // watch sencillo para “fin de oleada”
-      const checkEnd = () => {
-        const doneSpawning = this.time.now >= this.lastWaveSpawnFinishAt;
-        const noEnemies = this.enemies.getChildren().length === 0;
-        if (doneSpawning && noEnemies) {
-          this.waveRunning = false;
-          this.updateWaveUI();
-        } else {
-          this.time.delayedCall(600, checkEnd);
-        }
-      };
-      this.time.delayedCall(600, checkEnd);
-    }
-
-    /* ----------------------- Preview colocación ----------------------- */
-    createPlacementPreview() {
-      const ts = this.map.tileSize;
-      this.previewRect = this.add.rectangle(0, 0, ts, ts, 0x00ff66, 0.18)
-        .setStrokeStyle(1, 0x00ff66, 0.7).setDepth(180).setVisible(false);
-      this.previewGhost = this.add.image(0, 0, 'towers', GROUPS[this.selFam][this.selIdx].frame)
-        .setAlpha(0.6).setDepth(185).setVisible(false);
-      this.previewText = this.add.text(0, 0, '', { fontFamily: 'monospace', fontSize: '12px', color: '#ffd76a' })
-        .setDepth(185).setVisible(false);
-    }
-
-    updatePlacementPreview(pointer: any) {
-      if (!this.map) return;
-      if (this.isPointerOnUI(pointer)) {
-        this.previewRect.setVisible(false);
-        this.previewGhost.setVisible(false);
-        this.previewText.setVisible(false);
-        return;
-      }
-      const ts = this.map.tileSize;
-      const { tx, ty } = this.worldToTile(pointer.worldX, pointer.worldY);
-      const cx = tx * ts + ts / 2;
-      const cy = ty * ts + ts / 2;
-
-      // frame correcto según selección
-      const model = GROUPS[this.selFam][this.selIdx];
-      if (model) this.previewGhost.setTexture('towers', model.frame);
-
-      const can = this.canPlaceAt(tx, ty, model?.cost ?? 0);
-      const fill = can ? 0x00ff66 : 0xff4444;
-
-      this.previewRect
-        .setVisible(true)
-        .setPosition(cx, cy)
-        .setFillStyle(fill, 0.18)
-        .setStrokeStyle(1, fill, 0.75);
-
-      this.previewGhost
-        .setVisible(!!model)
-        .setPosition(cx, cy)
-        .setTint(can ? 0xffffff : 0xff4444);
-
-      this.previewText
-        .setVisible(true)
-        .setPosition(cx + ts / 2 + 6, cy - ts / 2 - 2)
-        .setText(model ? `Coste: ${model.cost}` : '');
-    }
-
-    isPointerOnUI(pointer: any) {
-      const hits = this.input.hitTestPointer(pointer) as any[];
-      return !!(hits && hits.some((o: any) => o?.getData?.('ui') || o?.getData?.('tower')));
-    }
-
-    canPlaceAt(tx: number, ty: number, cost: number) {
-      if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return false;
-      const key = this.tileKey(tx, ty);
-      if (this.blockedTiles.has(key) || this.occupiedTiles.has(key)) return false;
-      if (this.gold < cost) return false;
-      return true;
-    }
-
-    /* --------------------- Mapa y enemigos --------------------- */
+    /* ------------------- dibujo de mapa ------------------- */
     drawMapFromJSON(map: MapDef) {
       const mark = (x: number, y: number) => this.blockedTiles.add(this.tileKey(x, y));
 
@@ -526,46 +296,137 @@ function createSceneClass() {
           }
         }
       }
-
       for (const r of map.buildMask) {
         for (let x = r.x; x < r.x + r.w; x++)
           for (let y = r.y; y < r.y + r.h; y++) mark(x, y);
       }
     }
 
-    pickEnemyVisual() {
-      const candidates: { key: string; frame: string }[] = [
-        { key: 'enemies48', frame: 'Demon Lord' },
-        { key: 'enemies48', frame: 'Death Knight' },
-        { key: 'enemies40', frame: 'Armored Knight' },
-        { key: 'enemies40', frame: 'Dark Mage' },
-        { key: 'enemies32', frame: 'Goblin Scout' },
-        { key: 'enemies32', frame: 'Orc Warrior' },
+    /** Elige frame y resistencias; si es jefe, usa sprites grandes */
+    pickEnemyVisual(isBoss=false) {
+      if (isBoss) {
+        const bosses = [
+          { key: 'enemies64', frame: 'Chaos Dragon', resist: { fire: 0.6, frost: 1.1, electric: 0.9 } },
+          { key: 'enemies64', frame: 'Void Titan',   resist: { fire: 1.0, frost: 0.6, electric: 0.9 } },
+          { key: 'enemies64', frame: 'World Destroyer', resist: { fire: 0.8, frost: 0.8, electric: 0.8 } },
+        ];
+        for (const b of bosses) {
+          const tex = this.textures.exists(b.key) ? this.textures.get(b.key) : null;
+          // @ts-ignore
+          if (tex && typeof tex.has === 'function' && tex.has(b.frame)) return b;
+        }
+      }
+      const candidates = [
+        { key: 'enemies48', frame: 'Demon Lord',     resist: { fire: 0.7, frost: 1.1, electric: 1.0 } },
+        { key: 'enemies48', frame: 'Death Knight',   resist: { fire: 1.1, frost: 0.7, electric: 1.0 } },
+        { key: 'enemies40', frame: 'Armored Knight', resist: { fire: 0.9, frost: 1.0, electric: 0.9 } },
+        { key: 'enemies40', frame: 'Dark Mage',      resist: { fire: 1.0, frost: 1.0, electric: 0.7 } },
+        { key: 'enemies32', frame: 'Goblin Scout',   resist: { fire: 1.0, frost: 1.0, electric: 1.0 } },
+        { key: 'enemies32', frame: 'Orc Warrior',    resist: { fire: 1.0, frost: 1.0, electric: 1.0 } },
       ];
       for (const c of candidates) {
         const tex = this.textures.exists(c.key) ? this.textures.get(c.key) : null;
         // @ts-ignore
         if (tex && typeof tex.has === 'function' && tex.has(c.frame)) return c;
       }
-      return { key: 'enemies32', frame: 'Goblin Scout' };
+      return { key: 'enemies32', frame: 'Goblin Scout', resist: { fire: 1, frost: 1, electric: 1 } };
     }
 
-    spawnEnemy(path: { x: number; y: number }[], hp: number, speed: number) {
+    /* ------------------- oleadas ------------------- */
+    startNextWave() {
+      if (this.gameOver || this.waveRunning) return;
+
+      this.waveIndex++;
+      this.waveRunning = true;
+      this.updateWaveUI();
+
+      const W = this.map.waves;
+      const diffMul = this.getDiffMultipliers(this.diff);
+
+      const baseCount = W.baseCount + this.waveIndex * W.countPerWave;
+      const count = Math.round(baseCount * diffMul.count);
+      const hp    = Math.round((W.baseHP + this.waveIndex * W.hpPerWave) * diffMul.hp);
+      const speed = (W.baseSpeed + this.waveIndex * W.speedPerWave) * diffMul.speed;
+
+      const isBossWave = (this.waveIndex % 5 === 0);
+      const bossCount  = isBossWave ? 1 : 0;
+
+      // Lane principal
+      const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
+      const pathTiles = this.map.paths[pathIdx];
+      const pathWorld = pathTiles.map(pt => ({
+        x: pt.x * this.map.tileSize + this.map.tileSize / 2,
+        y: pt.y * this.map.tileSize + this.map.tileSize / 2,
+      }));
+
+      // Spawns normales
+      for (let i = 0; i < count; i++) {
+        this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(pathWorld, hp, speed, false));
+      }
+
+      // Oleada secundaria cada 3
+      if (this.waveIndex % 3 === 0) {
+        const otherTiles = this.map.paths[pathIdx ? 0 : 1];
+        const other = otherTiles.map(pt => ({
+          x: pt.x * this.map.tileSize + this.map.tileSize / 2,
+          y: pt.y * this.map.tileSize + this.map.tileSize / 2,
+        }));
+        for (let i = 0; i < Math.floor(count * 0.7); i++) {
+          this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed, false));
+        }
+      }
+
+      // Boss
+      if (bossCount > 0) {
+        const bossHp = Math.round(hp * 8.0);
+        const bossSpeed = speed * 0.75;
+        const t = count * W.spawnDelayMs + 1800;
+        this.time.delayedCall(t, () => this.spawnEnemy(pathWorld, bossHp, bossSpeed, true));
+      }
+
+      // Momento en el que terminaron de salir
+      const totalSlots = count + Math.floor(count * 0.7) * (this.waveIndex % 3 === 0 ? 1 : 0);
+      const spawnTime  = (totalSlots) * W.spawnDelayMs + (bossCount ? (count * W.spawnDelayMs + 1800) : 0);
+      this.lastWaveSpawnFinishAt = this.time.now + spawnTime + 500;
+
+      // watcher hasta fin de oleada
+      const checkEnd = () => {
+        if (this.gameOver) return;
+        const doneSpawning = this.time.now >= this.lastWaveSpawnFinishAt;
+        const noEnemies = this.enemies.getChildren().length === 0;
+
+        if (doneSpawning && noEnemies) {
+          this.waveRunning = false;
+          // victoria?
+          if (this.waveIndex >= this.maxWaves) { this.endGame(true); return; }
+          this.autoSave();
+          this.updateWaveUI();
+        } else {
+          this.time.delayedCall(600, checkEnd);
+        }
+      };
+      this.time.delayedCall(800, checkEnd);
+    }
+
+    spawnEnemy(path: { x: number; y: number }[], hp: number, speed: number, isBoss: boolean) {
       const start = path[0];
-      const vis = this.pickEnemyVisual();
+      const vis = this.pickEnemyVisual(isBoss);
       const e = this.add.image(start.x, start.y, vis.key, vis.frame).setDepth(120);
       this.enemies.add(e);
       (e as any).hp = hp;
       (e as any).maxhp = hp;
       (e as any).speed = speed;
       (e as any).pathIndex = 1;
+      (e as any).resist = vis.resist || { fire: 1, frost: 1, electric: 1 };
+      (e as any).isBoss = isBoss;
 
-      const bar = this.add.rectangle(e.x, e.y - 18, 24, 3, 0x57ff57).setOrigin(0.5, 0.5).setDepth(121);
+      const bar = this.add.rectangle(e.x, e.y - (isBoss ? 24 : 18), isBoss ? 60 : 24, isBoss ? 5 : 3, 0x57ff57)
+        .setOrigin(0.5, 0.5).setDepth(121);
       (e as any).hpbar = bar;
 
       (e as any).updateTick = () => {
         const i = (e as any).pathIndex;
-        if (i >= path.length) { e.destroy(); bar.destroy(); return; }
+        if (i >= path.length) { this.onLeak(e, bar); return; }
         const target = path[i];
         const dx = target.x - e.x, dy = target.y - e.y;
         const dist = Math.hypot(dx, dy);
@@ -573,137 +434,62 @@ function createSceneClass() {
         if (dist <= spd) { e.setPosition(target.x, target.y); (e as any).pathIndex++; }
         else { e.setPosition(e.x + (dx / dist) * spd, e.y + (dy / dist) * spd); }
         const ratio = Math.max(0, (e as any).hp / (e as any).maxhp);
-        bar.setPosition(e.x, e.y - 18).setScale(ratio, 1);
+        bar.setPosition(e.x, bar.y = e.y - (isBoss ? 24 : 18)).setScale(ratio, 1);
       };
     }
 
-    /* ---------------- Combate / torres / panel ---------------- */
-
-    getTowerStats(t: { model: TowerModel; level: number }) {
-      const m = t.model;
-      const L = t.level;
-      const dmgMul = 1 + 0.25 * L;
-      const cdMul  = Math.pow(0.92, L);
-      const range  = m.range + 12 * L;
-      const dmg    = Math.round(m.dmg * dmgMul);
-
-      const dot = m.dot ? { dps: Math.round(m.dot.dps * dmgMul), ms: m.dot.ms } : undefined;
-      const slow = m.slow ? { factor: Math.max(0.5, m.slow.factor), ms: m.slow.ms + 100 * L } : undefined;
-      const chain = m.chain ? { ...m.chain } : undefined;
-
-      return { dmg, range, cd: Math.max(120, Math.round(m.cd * cdMul)), projectile: m.projectile, fam: m.fam, dot, slow, chain, frame: m.frame };
+    onLeak(e: any, bar: any) {
+      bar?.destroy(); e.destroy();
+      if (this.gameOver) return;
+      this.lives = Math.max(0, this.lives - (e.isBoss ? 3 : 1));
+      this.livesText.setText(`❤️ ${this.lives}`);
+      this.cameras.main.shake(120, 0.004);
+      if (this.lives <= 0) this.endGame(false);
     }
 
-    getUpgradeCost(t: { model: TowerModel; level: number }) {
-      const base = t.model.cost;
-      return Math.round(base * Math.pow(1.45, t.level + 1));
-    }
-
-    getSellRefund(t: { totalSpent: number }) {
-      return Math.max(1, Math.floor(t.totalSpent * 0.7));
-    }
-
-    showTowerTooltip(t: any) {
-      const s = this.getTowerStats(t);
-      this.rangeCircle.setVisible(true).setPosition(t.sprite.x, t.sprite.y).setRadius(s.range);
-      const dps = (s.dmg * 1000 / s.cd).toFixed(1);
-      this.tooltip
-        .setVisible(true)
-        .setPosition(t.sprite.x + 18, t.sprite.y - 18)
-        .setText(`T: ${s.frame}  Lvl ${t.level}\nDPS ${dps} · Range ${s.range} · CD ${s.cd}ms`);
-    }
-
-    openTowerPanel(t: any) {
-      this.towers.forEach(tt => { if (tt !== t) this.closeTowerPanel(tt); });
-      if (t.panel && t.panel.active) { this.closeTowerPanel(t); return; }
-
-      const upCost = this.getUpgradeCost(t);
-      const refund = this.getSellRefund(t);
-
-      const container = this.add.container(t.sprite.x + 56, t.sprite.y - 6).setDepth(500);
-      container.setSize(160, 70);
-      // @ts-ignore
-      container.setInteractive(new PhaserLib.Geom.Rectangle(-80, -35, 160, 70), PhaserLib.Geom.Rectangle.Contains);
-      container.setData('ui', true);
-
-      const bg = this.add.rectangle(0, 0, 160, 70, 0x0e1420, 0.92).setStrokeStyle(1, 0x6aa0ff, 0.8);
-      const title = this.add.text(-70, -28, `Lvl ${t.level}`, { fontFamily: 'monospace', fontSize: '12px', color: '#9ad0ff' });
-      const btnUp = this.add.rectangle(-50, 10, 90, 24, 0x16304a, 0.95).setStrokeStyle(1, 0x8ecbff, 0.9);
-      const txtUp = this.add.text(-86, 3, `Upgrade (${upCost})`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
-      const btnSell = this.add.rectangle(48, 10, 60, 24, 0x2d1a1a, 0.95).setStrokeStyle(1, 0xff9c9c, 0.9);
-      const txtSell = this.add.text(20, 3, `Sell +${refund}`, { fontFamily: 'monospace', fontSize: '12px', color: '#ffd6d6' });
-      const closeX = this.add.text(66, -32, '✕', { fontFamily: 'monospace', fontSize: '12px', color: '#cbd5ff' });
-
-      [bg, btnUp, btnSell, txtUp, txtSell, title, closeX].forEach((it: any) => {
-        it.setInteractive?.();
-        it.setData?.('ui', true);
-      });
-
-      container.add([bg, title, btnUp, txtUp, btnSell, txtSell, closeX]);
-
-      const stop = (_p: any, _lx: any, _ly: any, event: any) => event?.stopPropagation?.();
-
-      btnUp.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
-        stop(p, lx, ly, event);
-        const cost = this.getUpgradeCost(t);
-        if (this.gold < cost) return;
-        this.gold -= cost;
-        this.goldText.setText(`🪙 ${this.gold}`);
-        t.level += 1;
-        t.totalSpent += cost;
-        try { this.sound.play('coin', { volume: 0.2 }); } catch {}
-        this.showTowerTooltip(t);
-        this.closeTowerPanel(t);
-      });
-
-      btnSell.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
-        stop(p, lx, ly, event);
-        const refundVal = this.getSellRefund(t);
-        this.gold += refundVal;
-        this.goldText.setText(`🪙 ${this.gold}`);
-        try { this.sound.play('coin', { volume: 0.25 }); } catch {}
-        const tk = t.sprite.getData('tileKey');
-        if (tk) this.occupiedTiles.delete(tk);
-        t.sprite.destroy();
-        this.closeTowerPanel(t);
-        this.towers = this.towers.filter((x: any) => x !== t);
-        this.rangeCircle.setVisible(false);
-        this.tooltip.setVisible(false);
-      });
-
-      closeX.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
-        stop(p, lx, ly, event);
-        this.closeTowerPanel(t);
-      });
-
-      container.on('pointerdown', stop);
-
-      t.panel = container;
-    }
-
-    closeTowerPanel(t: any) {
-      if (t.panel && t.panel.active) t.panel.destroy();
-      t.panel = undefined;
-    }
-
-    fireAt(t: { sprite: any; model: TowerModel; level: number }, target: any) {
-      const s = this.getTowerStats(t);
-      const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', s.projectile).setDepth(200);
+    /* ------------------- pooling de proyectiles ------------------- */
+    getProjectile() {
+      let p = this.projPool.pop();
+      if (p && p.active === false) {
+        p.setActive(true).setVisible(true);
+        return p;
+      }
+      p = this.add.image(0,0,'projectiles','Fireball').setDepth(200);
       this.projectiles.add(p);
+      return p;
+    }
+    recycleProjectile(p: any) {
+      p.setActive(false).setVisible(false);
+      this.projPool.push(p);
+    }
+
+    /* ------------------- torres / disparo ------------------- */
+    getLevel(spr: any) { return this.towers.find(t => t.sprite === spr)?.level ?? 1; }
+    getCd(spr: any)    { const t = this.towers.find(tt => tt.sprite === spr)!; return Math.max(120, Math.round(t.model.cd * Math.pow(0.92, t.level-1))); }
+    getRange(spr: any) { const t = this.towers.find(tt => tt.sprite === spr)!; return Math.round(t.model.range * (1 + 0.08*(t.level-1))); }
+    getDmg(spr: any)   { const t = this.towers.find(tt => tt.sprite === spr)!; return Math.round(t.model.dmg * Math.pow(1.18, t.level-1)); }
+    getDPS(spr: any)   { return this.getDmg(spr) * (1000 / this.getCd(spr)); }
+
+    fireAt(t: { sprite: any; model: TowerModel; last: number; level: number }, target: any) {
+      const p = this.getProjectile();
+      p.setTexture('projectiles', t.model.projectile);
+      p.setPosition(t.sprite.x, t.sprite.y);
+
       (p as any).vx = (target.x - p.x);
       (p as any).vy = (target.y - p.y);
       const len = Math.hypot((p as any).vx, (p as any).vy) || 1;
       const speed = 520;
       (p as any).vx = (p as any).vx / len * speed * (1 / 60);
       (p as any).vy = (p as any).vy / len * speed * (1 / 60);
-      (p as any).dmg = s.dmg;
-      (p as any).fam = s.fam;
-      (p as any).slow = s.slow;
-      (p as any).dot  = s.dot;
-      (p as any).chain= s.chain;
+
+      (p as any).dmg = this.getDmg(t.sprite);
+      (p as any).fam = t.model.fam;
+      (p as any).slow = t.model.slow;
+      (p as any).dot  = t.model.dot;
+      (p as any).chain= t.model.chain;
       (p as any).ttl = 900;
 
-      try { this.sound.play('shoot', { volume: 0.25 }); } catch {}
+      try { if (!this.muted) this.sound.play('shoot', { volume: 0.25 }); } catch {}
     }
 
     chainLightning(origin: any, baseDmg: number, hops: number, falloff: number) {
@@ -743,8 +529,12 @@ function createSceneClass() {
       const fam = proj.fam as FamKey;
       const baseDmg = proj.dmg as number;
 
-      e.hp -= baseDmg;
+      // resistencias (1 = normal; <1 resistencia; >1 debilidad)
+      const resistMul = e.resist?.[fam] ?? 1;
+      const finalDmg = Math.max(1, Math.round(baseDmg * resistMul));
+      e.hp -= finalDmg;
 
+      // efectos secundarios (capturados en const para no leer proj luego)
       if (fam === 'frost' && proj.slow) {
         const slowFactor: number = proj.slow.factor;
         const slowMs: number = proj.slow.ms;
@@ -752,18 +542,18 @@ function createSceneClass() {
         e.speed = old * slowFactor;
         this.time.delayedCall(slowMs, () => e && (e.speed = old));
       }
-      if ((fam === 'fire' || fam === 'nature') && proj.dot) {
-        const dotDps: number = proj.dot.dps;
+      if (fam === 'fire' && proj.dot) {
+        const dotDps: number = proj.dot.dps * resistMul; // DOT afectado por resistencia fuego
         const dotMs: number = proj.dot.ms;
         const ticks = Math.floor(dotMs / 300);
         for (let i = 1; i <= ticks; i++) {
-          this.time.delayedCall(i * 300, () => e && (e.hp -= Math.round(dotDps * 0.3)));
+          this.time.delayedCall(i * 300, () => e && (e.hp -= Math.max(1, Math.round(dotDps * 0.3))));
         }
       }
       if (fam === 'electric' && proj.chain) {
         const hops = proj.chain.hops as number;
         const falloff = proj.chain.falloff as number;
-        this.chainLightning(enemy, baseDmg, hops, falloff);
+        this.chainLightning(enemy, finalDmg, hops, falloff);
       }
 
       if (e.hp <= 0) {
@@ -772,29 +562,76 @@ function createSceneClass() {
 
         e.hpbar?.destroy();
         e.destroy();
-        this.gold += 6 + Math.floor(this.waveIndex * 0.6);
+        // recompensas (más en jefe)
+        const reward = (6 + Math.floor(this.waveIndex * 0.6)) * (e.isBoss ? 10 : 1) * this.getDiffMultipliers(this.diff).goldGain;
+        this.gold += Math.round(reward);
         this.goldText.setText(`🪙 ${this.gold}`);
-        try { this.sound.play('coin', { volume: 0.25 }); } catch {}
+        try { if (!this.muted) this.sound.play('coin', { volume: 0.25 }); } catch {}
       }
 
-      proj.destroy();
+      this.recycleProjectile(proj);
     }
 
+    /* ---------------------- upgrade / sell ---------------------- */
+    openTowerMenu(t: { sprite: any; model: TowerModel; last: number; level: number }) {
+      // eliminar menús anteriores
+      this.children.list
+        .filter((o: any) => o?.getData && o.getData('ui'))
+        .forEach((o: any) => o.destroy());
+
+      const x = t.sprite.x, y = t.sprite.y - 46;
+      const box = this.add.container(x, y).setDepth(1600).setData('ui', true);
+      const bg = this.add.rectangle(0,0,140,64,0x102030,0.95).setStrokeStyle(1,0x7fb1ff).setOrigin(0.5).setData('ui', true);
+      const lvl = t.level;
+      const upCost = Math.round(t.model.cost * (0.8 + 0.8*lvl));
+      const sell = Math.round(t.model.cost * (0.6 + 0.2*(lvl-1)));
+
+      const txt = this.add.text(0,-20, `Lvl ${lvl}\nUpgrade: ${upCost} 🪙\nSell: ${sell} 🪙`, {
+        fontFamily:'monospace', fontSize:'12px', color:'#cfe8ff', align:'center'
+      }).setOrigin(0.5).setData('ui', true);
+
+      const btnUp = this.add.rectangle(-35,16,70,22,0x1e3b1f,0.95).setStrokeStyle(1,0x8fff9d).setData('ui', true);
+      const txUp  = this.add.text(-35,16,'Upgrade',{fontFamily:'monospace',fontSize:'11px',color:'#aef5bb'}).setOrigin(0.5).setData('ui', true);
+      const btnSel= this.add.rectangle(35,16,70,22,0x3b1e1e,0.95).setStrokeStyle(1,0xff9c9c).setData('ui', true);
+      const txSel = this.add.text(35,16,'Vender',{fontFamily:'monospace',fontSize:'11px',color:'#ffd6d6'}).setOrigin(0.5).setData('ui', true);
+
+      [btnUp, btnSel].forEach(b => b.setInteractive({ cursor:'pointer' }));
+      btnUp.on('pointerup', () => {
+        if (this.gold >= upCost) {
+          this.gold -= upCost; this.goldText.setText(`🪙 ${this.gold}`);
+          t.level++;
+          // feedback
+          this.cameras.main.flash(80, 40, 140, 70);
+        }
+        box.destroy();
+      });
+      btnSel.on('pointerup', () => {
+        this.gold += sell; this.goldText.setText(`🪙 ${this.gold}`);
+        this.blockedTiles.delete(this.tileKey(Math.floor(t.sprite.x/this.map.tileSize), Math.floor(t.sprite.y/this.map.tileSize)));
+        t.sprite.destroy();
+        this.towers = this.towers.filter(T => T !== t);
+        box.destroy();
+      });
+
+      box.add([bg, txt, btnUp, txUp, btnSel, txSel]);
+    }
+
+    /* ------------------- update loop ------------------- */
     update(time: number, dt: number) {
       if (!this.ready || !this.enemies || !this.projectiles) return;
 
       this.enemies.getChildren().forEach((e: any) => e?.updateTick?.());
 
       for (const t of this.towers) {
-        const s = this.getTowerStats(t);
-        if (time < t.last + s.cd) continue;
+        if (time < t.last + this.getCd(t.sprite)) continue;
 
         let best: any = null;
         let bestD = 1e9;
+        const range = this.getRange(t.sprite);
         this.enemies.getChildren().forEach((c: any) => {
           if (!c || !c.active) return;
           const d = PhaserLib.Math.Distance.Between(t.sprite.x, t.sprite.y, c.x, c.y);
-          if (d < s.range && d < bestD) { best = c; bestD = d; }
+          if (d < range && d < bestD) { best = c; bestD = d; }
         });
         if (best) {
           t.last = time;
@@ -803,8 +640,9 @@ function createSceneClass() {
       }
 
       this.projectiles.getChildren().forEach((p: any) => {
+        if (!p.active) return;
         p.x += p.vx; p.y += p.vy; p.ttl -= dt;
-        if (p.ttl <= 0) { p.destroy(); return; }
+        if (p.ttl <= 0) { this.recycleProjectile(p); return; }
         let hit: any = null;
         this.enemies.getChildren().some((e: any) => {
           if (!e || !e.active) return false;
@@ -814,6 +652,93 @@ function createSceneClass() {
         });
         if (hit) this.doHit(p, hit);
       });
+    }
+
+    /* ------------------- victoria/derrota ------------------- */
+    endGame(won: boolean) {
+      this.gameOver = true;
+      this.scene.pause();
+
+      const w = this.scale.width, h = this.scale.height;
+      const overlay = this.add.container(w/2, h/2).setDepth(2000);
+      overlay.setData('ui', true);
+
+      const bg = this.add.rectangle(0, 0, 420, 220, 0x0b101a, 0.95)
+        .setStrokeStyle(2, won ? 0x78ff9e : 0xff8b8b, 1);
+      const title = this.add.text(0, -60, won ? '¡Victoria!' : 'Derrota', {
+        fontFamily: 'monospace', fontSize: '24px', color: won ? '#9effbe' : '#ffd6d6'
+      }).setOrigin(0.5);
+
+      const btnRetry = this.add.rectangle(-80, 40, 140, 36, 0x142338, 0.95).setStrokeStyle(1, 0x7fb1ff, 0.9);
+      const txtRetry = this.add.text(-80, 40, 'Reintentar', { fontFamily: 'monospace', fontSize: '14px', color: '#cfe8ff' }).setOrigin(0.5);
+      btnRetry.setInteractive().setData('ui', true);
+
+      const btnExit = this.add.rectangle(80, 40, 140, 36, 0x2d1a1a, 0.95).setStrokeStyle(1, 0xff9c9c, 0.9);
+      const txtExit = this.add.text(80, 40, 'Volver', { fontFamily: 'monospace', fontSize: '14px', color: '#ffd6d6' }).setOrigin(0.5);
+      btnExit.setInteractive().setData('ui', true);
+
+      overlay.add([bg, title, btnRetry, txtRetry, btnExit, txtExit]);
+
+      btnRetry.on('pointerup', () => window.location.reload());
+      btnExit.on('pointerup', () => window.location.href = '/');
+
+      // limpiar autosave
+      try { localStorage.removeItem('td_save_v2'); } catch {}
+    }
+
+    /* ------------------- dificultad ------------------- */
+    getDiffMultipliers(diff: Difficulty) {
+      if (diff === 'easy')   return { hp: 0.85, speed: 0.95, count: 0.9, gold: 1.2, goldGain: 1.2, lives: 1.3 };
+      if (diff === 'hard')   return { hp: 1.25, speed: 1.05, count: 1.15, gold: 0.9, goldGain: 0.9, lives: 0.8 };
+      return /* normal */      { hp: 1.00, speed: 1.00, count: 1.00, gold: 1.0, goldGain: 1.0, lives: 1.0 };
+    }
+
+    /* ------------------- autosave ------------------- */
+    autoSave() {
+      try {
+        const towers = this.towers.map(t => ({
+          x: t.sprite.x, y: t.sprite.y,
+          fam: t.model.fam, frame: t.model.frame, level: t.level
+        }));
+        const payload = {
+          map: this.map.name, diff: this.diff,
+          gold: this.gold, lives: this.lives,
+          waveIndex: this.waveIndex, towers
+        };
+        localStorage.setItem('td_save_v2', JSON.stringify(payload));
+      } catch {}
+    }
+
+    tryRestore() {
+      try {
+        const s = localStorage.getItem('td_save_v2');
+        if (!s) return;
+        const save = JSON.parse(s);
+        const url = new URL(window.location.href);
+        const reqMap = (url.searchParams.get('map') || 'grass_dual');
+        const reqDiff = (url.searchParams.get('diff') || 'normal');
+        if (save.map !== this.map.name || save.diff !== reqDiff || reqMap !== this.map.name) return;
+
+        if (window.confirm('¿Continuar partida guardada?')) {
+          this.gold = save.gold; this.goldText.setText(`🪙 ${this.gold}`);
+          this.lives = save.lives; this.livesText.setText(`❤️ ${this.lives}`);
+          this.waveIndex = save.waveIndex; this.updateWaveUI();
+
+          // recrear torres
+          for (const t of save.towers) {
+            const model = GROUPS[t.fam as FamKey].find(m => m.frame === t.frame) || GROUPS[t.fam as FamKey][0];
+            const spr = this.add.image(t.x, t.y, 'towers', model.frame).setDepth(300).setData('tower', true).setInteractive({cursor:'pointer'});
+            this.towers.push({ sprite: spr, model, last: 0, level: t.level || 1 });
+            spr.on('pointerover', () => {
+              this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(this.getRange(spr));
+              const dps = this.getDPS(spr).toFixed(1);
+              this.tooltip.setVisible(true).setPosition(spr.x + 18, spr.y - 18)
+                .setText(`T: ${model.frame} | lvl ${this.getLevel(spr)}\nDPS ${dps} · Range ${this.getRange(spr)} · CD ${this.getCd(spr)}ms`);
+            });
+            spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
+          }
+        }
+      } catch {}
     }
   };
 }
@@ -852,11 +777,12 @@ export default function BattleClient() {
   return (
     <div style={{ padding: '8px' }}>
       <h3 style={{ color: '#e8f4ff', fontFamily: 'monospace', margin: '4px 0' }}>
-        Fluent Tower Defense — MVP+
+        Fluent Tower Defense — MVP++
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        HUD: elige familia/variante (iconos muestran <b>coste</b> y <b>DPS</b>). Teclas: <b>1</b>=⚡ <b>2</b>=🔥 <b>3</b>=❄ <b>4</b>=🌿,
-        <b> ←/→</b> cambia variante, <b>Espacio</b> pausa, <b>F</b> x2, <b>Enter</b> inicia oleada. Click torre para <b>Upgrade/Vender</b>.
+        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>4</b>=🛡 · <b>←/→</b> cambia skin ·
+        <b> Espacio</b> pausa · <b>F</b> x2 · <b>ENTER</b> inicia oleada ·
+        Click torre para <b>Upgrade/Vender</b> · Query: <code>?map=grass_dual&diff=easy|normal|hard</code>
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
       {!mounted && <div style={{ color: '#99a', fontFamily: 'monospace', marginTop: 8 }}>Cargando…</div>}
