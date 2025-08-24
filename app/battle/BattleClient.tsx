@@ -105,6 +105,13 @@ function createSceneClass() {
     hudFamBtns: any[] = [];
     hudVarBtns: any[] = [];
 
+    // Wave UI
+    waveText!: any;
+    waveBtn!: any;
+    waveBtnLabel!: any;
+    waveRunning = false;
+    lastWaveSpawnFinishAt = 0;
+
     // Preview colocación
     previewRect!: any;
     previewGhost!: any;
@@ -159,7 +166,7 @@ function createSceneClass() {
 
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia variante · Espacio pausa · F x2 · Click torre para Upgrade/Vender`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia variante · Espacio pausa · F x2 · ENTER inicia oleada`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -185,6 +192,9 @@ function createSceneClass() {
 
       // Preview de colocación
       this.createPlacementPreview();
+
+      // Wave UI (manual)
+      this.createWaveControls();
 
       // Handler global de colocar torres — con hit-test para NO colocar sobre UI/torre
       this.input.on('pointerdown', (pointer: any) => {
@@ -236,12 +246,12 @@ function createSceneClass() {
         if (e.key === 'ArrowRight') { this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
+        if (e.code === 'Enter') this.startNextWave();
       });
 
-      // Waves (auto)
-      this.setupWavesFromJSON(this.map);
-
+      // Sin auto-waves: empiezas con botón/Enter
       this.ready = true;
+      this.updateWaveUI();
     }
 
     /* ----------------------- HUD ----------------------- */
@@ -259,16 +269,16 @@ function createSceneClass() {
       const baseY = 58;
 
       const hud = this.add.container(baseX, baseY).setDepth(900);
-      const bg = this.add.rectangle(0, 0, 460, 86, 0x0e1420, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x4b6fb1, 0.6);
+      const bg = this.add.rectangle(0, 0, 520, 98, 0x0e1420, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x4b6fb1, 0.6);
       bg.setData('ui', true).setInteractive();
       hud.add(bg);
 
       // fila 1: familias
       this.hudFamBtns = [];
       famIcons.forEach((fi, i) => {
-        const bx = 12 + i * 110;
+        const bx = 12 + i * 128;
         const by = 10;
-        const tile = this.add.rectangle(bx, by, 96, 28, 0x17253a, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x7fb1ff, 0.7);
+        const tile = this.add.rectangle(bx, by, 116, 28, 0x17253a, 0.8).setOrigin(0, 0).setStrokeStyle(1, 0x7fb1ff, 0.7);
         tile.setData('ui', true).setInteractive();
         const icon = this.add.image(bx + 14, by + 14, 'towers', fi.frame).setScale(0.45).setOrigin(0, 0.5);
         const txt  = this.add.text(bx + 40, by + 6, `${fi.label}  ${fi.fam}`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
@@ -286,19 +296,29 @@ function createSceneClass() {
         this.hudFamBtns.push({ tile, icon, txt, fam: fi.fam });
       });
 
-      // fila 2: variantes de la familia seleccionada
+      // fila 2: variantes + coste/DPS
       this.hudVarBtns = [];
       for (let i = 0; i < 3; i++) {
-        const bx = 12 + i * 140;
+        const bx = 12 + i * 170;
         const by = 46;
-        const tile = this.add.rectangle(bx, by, 128, 28, 0x152232, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x6aa0ff, 0.65);
+        const tile = this.add.rectangle(bx, by, 160, 40, 0x152232, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x6aa0ff, 0.65);
         tile.setData('ui', true).setInteractive();
-        const icon = this.add.image(bx + 14, by + 14, 'towers', 'Arc Coil I').setScale(0.45).setOrigin(0, 0.5);
+        const icon = this.add.image(bx + 14, by + 20, 'towers', 'Arc Coil I').setScale(0.5).setOrigin(0, 0.5);
         icon.setData('ui', true);
-        const txt  = this.add.text(bx + 40, by + 6, `Var`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
-        txt.setData('ui', true);
+        const nameTxt  = this.add.text(bx + 46, by + 4, `Var`, { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
+        nameTxt.setData('ui', true);
 
-        [tile, icon, txt].forEach(el => hud.add(el));
+        const goldIcon = this.add.image(bx + 46, by + 26, 'ui32', 'icon_gold').setScale(0.5).setOrigin(0, 0.5);
+        goldIcon.setData('ui', true);
+        const costTxt  = this.add.text(bx + 62, by + 18, `0`, { fontFamily: 'monospace', fontSize: '12px', color: '#ffd76a' });
+        costTxt.setData('ui', true);
+
+        const enIcon = this.add.image(bx + 98, by + 26, 'ui32', 'icon_energy').setScale(0.5).setOrigin(0, 0.5);
+        enIcon.setData('ui', true);
+        const dpsTxt  = this.add.text(bx + 114, by + 18, `0`, { fontFamily: 'monospace', fontSize: '12px', color: '#9ad0ff' });
+        dpsTxt.setData('ui', true);
+
+        [tile, icon, nameTxt, goldIcon, costTxt, enIcon, dpsTxt].forEach(el => hud.add(el));
 
         tile.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => {
           ev?.stopPropagation?.();
@@ -306,9 +326,9 @@ function createSceneClass() {
           this.refreshHUD();
         });
         icon.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
-        txt.on('pointerup',  (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
+        nameTxt.on('pointerup',  (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); tile.emit('pointerup', _p, _lx, _ly, ev); });
 
-        this.hudVarBtns.push({ tile, icon, txt, idx: i });
+        this.hudVarBtns.push({ tile, icon, nameTxt, costTxt, dpsTxt, idx: i });
       }
 
       this.hud = hud;
@@ -327,16 +347,108 @@ function createSceneClass() {
       this.hudVarBtns.forEach((b, i) => {
         const model = list[i];
         const exists = !!model;
-        b.tile.setVisible(exists);
-        b.icon.setVisible(exists);
-        b.txt.setVisible(exists);
+        [b.tile, b.icon, b.nameTxt, b.costTxt, b.dpsTxt].forEach((el: any) => el.setVisible(exists));
         if (exists) {
           b.icon.setTexture('towers', model.frame);
-          b.txt.setText(`${model.frame}  (${model.cost})`);
+          b.nameTxt.setText(model.frame);
+          b.costTxt.setText(String(model.cost));
+          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
+          b.dpsTxt.setText(dps);
           const active = this.selIdx === i;
           b.tile.setFillStyle(active ? 0x20324c : 0x152232, active ? 0.95 : 0.85);
         }
       });
+    }
+
+    /* ------------------ Wave UI y lógica manual ------------------ */
+    createWaveControls() {
+      // Texto Wave
+      this.waveText = this.add.text(320, 16, `Wave ${this.waveIndex}`, {
+        fontFamily: 'monospace', fontSize: '16px', color: '#cfe8ff'
+      }).setDepth(1000);
+
+      // Botón Next Wave
+      const bx = 480, by = 12;
+      const btn = this.add.container(bx, by).setDepth(1000);
+      const bg = this.add.rectangle(0, 0, 180, 24, 0x142338, 0.9).setOrigin(0, 0).setStrokeStyle(1, 0x7fb1ff, 0.8);
+      bg.setInteractive().setData('ui', true);
+      const label = this.add.text(10, 4, '[ ▶  Siguiente Oleada ]', { fontFamily: 'monospace', fontSize: '12px', color: '#cfe8ff' });
+      label.setData('ui', true);
+      btn.add([bg, label]);
+      btn.setData('ui', true);
+
+      btn.on('pointerup', (_p: any, _lx: any, _ly: any, ev: any) => { ev?.stopPropagation?.(); this.startNextWave(); });
+
+      this.waveBtn = btn;
+      this.waveBtnLabel = label;
+    }
+
+    updateWaveUI() {
+      this.waveText?.setText(`Wave ${this.waveIndex}`);
+      if (!this.waveBtnLabel) return;
+      if (this.waveRunning) {
+        this.waveBtnLabel.setText('[ ⏳  Oleada en curso ]');
+        this.waveBtn?.setAlpha(0.6);
+      } else {
+        this.waveBtnLabel.setText('[ ▶  Siguiente Oleada ]');
+        this.waveBtn?.setAlpha(1);
+      }
+    }
+
+    computeParamsForWave(index: number) {
+      const W = this.map.waves;
+      return {
+        count: W.baseCount + index * W.countPerWave,
+        hp:    W.baseHP    + index * W.hpPerWave,
+        speed: W.baseSpeed + index * W.speedPerWave,
+        delay: W.spawnDelayMs
+      };
+    }
+
+    startNextWave() {
+      if (this.waveRunning) return;
+      this.waveRunning = true;
+      this.waveIndex += 1;
+      this.updateWaveUI();
+
+      const { count, hp, speed, delay } = this.computeParamsForWave(this.waveIndex);
+      const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
+      const pathTiles = this.map.paths[pathIdx];
+      const pathWorld = pathTiles.map(pt => ({
+        x: pt.x * this.map.tileSize + this.map.tileSize / 2,
+        y: pt.y * this.map.tileSize + this.map.tileSize / 2,
+      }));
+
+      for (let i = 0; i < count; i++) {
+        this.time.delayedCall(i * delay, () => this.spawnEnemy(pathWorld, hp, speed));
+      }
+
+      // oleada secundaria opcional cada 3
+      if (this.waveIndex % 3 === 0) {
+        const other = this.map.paths[pathIdx ? 0 : 1].map(pt => ({
+          x: pt.x * this.map.tileSize + this.map.tileSize / 2,
+          y: pt.y * this.map.tileSize + this.map.tileSize / 2,
+        }));
+        for (let i = 0; i < Math.floor(count * 0.7); i++) {
+          this.time.delayedCall(i * delay, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed));
+        }
+      }
+
+      // momento en el que habrá terminado el último spawn
+      this.lastWaveSpawnFinishAt = this.time.now + count * delay + 2000;
+
+      // watch sencillo para “fin de oleada”
+      const checkEnd = () => {
+        const doneSpawning = this.time.now >= this.lastWaveSpawnFinishAt;
+        const noEnemies = this.enemies.getChildren().length === 0;
+        if (doneSpawning && noEnemies) {
+          this.waveRunning = false;
+          this.updateWaveUI();
+        } else {
+          this.time.delayedCall(600, checkEnd);
+        }
+      };
+      this.time.delayedCall(600, checkEnd);
     }
 
     /* ----------------------- Preview colocación ----------------------- */
@@ -400,7 +512,7 @@ function createSceneClass() {
       return true;
     }
 
-    /* --------------------- Mapa y waves --------------------- */
+    /* --------------------- Mapa y enemigos --------------------- */
     drawMapFromJSON(map: MapDef) {
       const mark = (x: number, y: number) => this.blockedTiles.add(this.tileKey(x, y));
 
@@ -436,41 +548,6 @@ function createSceneClass() {
         if (tex && typeof tex.has === 'function' && tex.has(c.frame)) return c;
       }
       return { key: 'enemies32', frame: 'Goblin Scout' };
-    }
-
-    setupWavesFromJSON(map: MapDef) {
-      this.waveIndex = 0;
-      const next = () => {
-        this.waveIndex++;
-        const W = map.waves;
-        const count = W.baseCount + this.waveIndex * W.countPerWave;
-        const hp    = W.baseHP    + this.waveIndex * W.hpPerWave;
-        const speed = W.baseSpeed + this.waveIndex * W.speedPerWave;
-
-        const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
-        const pathTiles = map.paths[pathIdx];
-        const pathWorld = pathTiles.map(pt => ({
-          x: pt.x * map.tileSize + map.tileSize / 2,
-          y: pt.y * map.tileSize + map.tileSize / 2,
-        }));
-
-        for (let i = 0; i < count; i++) {
-          this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(pathWorld, hp, speed));
-        }
-
-        if (this.waveIndex % 3 === 0) {
-          const other = map.paths[pathIdx ? 0 : 1].map(pt => ({
-            x: pt.x * map.tileSize + map.tileSize / 2,
-            y: pt.y * map.tileSize + map.tileSize / 2,
-          }));
-          for (let i = 0; i < Math.floor(count * 0.7); i++) {
-            this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed));
-          }
-        }
-
-        this.time.delayedCall(count * W.spawnDelayMs + 5500, next);
-      };
-      next();
     }
 
     spawnEnemy(path: { x: number; y: number }[], hp: number, speed: number) {
@@ -540,7 +617,6 @@ function createSceneClass() {
       this.towers.forEach(tt => { if (tt !== t) this.closeTowerPanel(tt); });
       if (t.panel && t.panel.active) { this.closeTowerPanel(t); return; }
 
-      const s = this.getTowerStats(t);
       const upCost = this.getUpgradeCost(t);
       const refund = this.getSellRefund(t);
 
@@ -779,8 +855,8 @@ export default function BattleClient() {
         Fluent Tower Defense — MVP+
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        HUD: elige familia y variante con click. También puedes usar <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ / <b>4</b>=🌿,
-        <b> ←/→</b> cambia variante, <b>Espacio</b> pausa, <b>F</b> x2. Click torre para <b>Upgrade/Vender</b>.
+        HUD: elige familia/variante (iconos muestran <b>coste</b> y <b>DPS</b>). Teclas: <b>1</b>=⚡ <b>2</b>=🔥 <b>3</b>=❄ <b>4</b>=🌿,
+        <b> ←/→</b> cambia variante, <b>Espacio</b> pausa, <b>F</b> x2, <b>Enter</b> inicia oleada. Click torre para <b>Upgrade/Vender</b>.
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
       {!mounted && <div style={{ color: '#99a', fontFamily: 'monospace', marginTop: 8 }}>Cargando…</div>}
