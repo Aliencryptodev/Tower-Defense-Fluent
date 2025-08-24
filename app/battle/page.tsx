@@ -1,13 +1,11 @@
-'use client';
+import dynamic from 'next/dynamic';
 
-import nextDynamic from 'next/dynamic';
-
-// Fuerza render dinámico y sin caché/ISR
+// Fuerza render dinámico y sin caché/ISR para este segmento
 export const dynamic = 'force-dynamic';
 export const revalidate = false;
 
-// Renderiza el juego solo en cliente (sin SSR)
-const BattleClient = nextDynamic(() => import('./BattleClient'), { ssr: false });
+// Renderiza el juego SOLO en cliente (sin SSR)
+const BattleClient = dynamic(() => import('./BattleClient'), { ssr: false });
 
 export default function Page() {
   return <BattleClient />;
