@@ -1,93 +1,60 @@
-// app/page.tsx  (Server Component)
-import Link from "next/link";
+// app/page.tsx
+import Link from 'next/link';
 
-const MAPS = [
-  { id: "grass_dual",  name: "Grass — Dual Lanes", desc: "Dos carriles, ritmo alto.", preview: "/previews/grass_dual.png" },
-  { id: "desert_cross", name: "Desert — Cross", desc: "Cruces y atajos.", preview: "/previews/desert_cross.png" },
-  { id: "ice_spiral",   name: "Ice — Spiral", desc: "Espiral hacia el centro.", preview: "/previews/ice_spiral.png" },
-  { id: "forest_maze",  name: "Forest — Maze", desc: "Zig-zag laberíntico.", preview: "/previews/forest_maze.png" },
-  { id: "lava_twins",   name: "Lava — Twins", desc: "Carriles paralelos.", preview: "/previews/lava_twins.png" },
-  { id: "cliffs_long",  name: "Cliffs — Long", desc: "Serpenteo largo.", preview: "/previews/cliffs_long.png" }
+const races = [
+  { key: 'terran',  name: 'Terran',  emoji: '🛡️', desc: 'Balas, misiles y mechs.' },
+  { key: 'protoss', name: 'Protoss', emoji: '🔮', desc: 'Energía psiónica y escudos.' },
+  { key: 'zerg',    name: 'Zerg',    emoji: '🧬', desc: 'Biomasa y enjambre.' },
 ];
 
+const maps = [
+  { key: 'grass_dual', name: 'Grass Dual' },
+  { key: 'desert_snake', name: 'Desert Snake' },
+];
 
-const DIFFS: { id: "easy"|"normal"|"hard"|"insane"; label: string; hint: string }[] = [
-  { id: "easy",   label: "Easy",   hint: "Para calentar motores" },
-  { id: "normal", label: "Normal", hint: "Experiencia base" },
-  { id: "hard",   label: "Hard",   hint: "Más vida y velocidad" },
-  { id: "insane", label: "Insane", hint: "Sólo para valientes" },
+const diffs = [
+  { key: 'easy', name: 'Easy' },
+  { key: 'normal', name: 'Normal' },
+  { key: 'hard', name: 'Hard' },
 ];
 
 export default function Home() {
   return (
-    <main style={{padding: "24px", fontFamily: "Inter, system-ui, sans-serif"}}>
-      <h1 style={{color:"#e8f4ff", fontWeight:700, margin:"0 0 8px"}}>Fluent Tower Defense</h1>
-      <p style={{color:"#a9b7ff", margin:0}}>Elige un mapa y dificultad</p>
+    <main className="min-h-screen bg-[#0c0e12] text-white">
+      <div className="max-w-5xl mx-auto p-6">
+        <h1 className="text-2xl font-semibold mb-4">Fluent Tower Defense — Selector</h1>
+        <p className="text-sm text-[#b7c7ff] mb-6">
+          Elige <b>Raza</b>, <b>Mapa</b> y <b>Dificultad</b>. (Temas/HUD StarCraft-like vendrán por raza)
+        </p>
 
-      <div style={{
-        display:"grid",
-        gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",
-        gap:16, marginTop:20
-      }}>
-        {MAPS.map(m => (
-          <div key={m.id} style={{
-            background:"linear-gradient(145deg,#141823,#0c0e12)",
-            border:"1px solid #1b2235",
-            borderRadius:16,
-            padding:16,
-            boxShadow:"0 4px 16px rgba(0,0,0,.35)"
-          }}>
-            <div style={{
-              height:140,
-              borderRadius:12,
-              marginBottom:12,
-              background: "radial-gradient(80% 80% at 50% 60%, #22304a 0%, #10141f 100%)",
-              border:"1px solid #202a3f",
-              display:"flex", alignItems:"center", justifyContent:"center",
-              color:"#9ab4ff", fontWeight:600
-            }}>
-              {m.preview ? (
-                // si más adelante pones una imagen en /public/previews/<id>.png
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={m.preview} alt={m.name} style={{width:"100%", height:"100%", objectFit:"cover", borderRadius:12}}/>
-              ) : (
-                <span>{m.name}</span>
-              )}
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {races.map((r) => (
+            <div key={r.key} className="rounded-2xl p-4 bg-[#131823] border border-[#22304a] shadow">
+              <div className="text-3xl">{r.emoji}</div>
+              <div className="text-lg font-semibold mt-2">{r.name}</div>
+              <div className="text-xs text-[#a9b7ff] mt-1">{r.desc}</div>
+              <div className="mt-3 text-xs text-[#94a3b8]">Mapas</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {maps.map((m) => (
+                  <div key={m.key} className="rounded-xl p-3 bg-[#0f141f] border border-[#1e2a40]">
+                    <div className="font-medium text-sm">{m.name}</div>
+                    <div className="mt-2 grid grid-cols-3 gap-1">
+                      {diffs.map((d) => (
+                        <Link
+                          key={d.key}
+                          href={`/battle?race=${r.key}&map=${m.key}&diff=${d.key}`}
+                          className="text-center text-[11px] rounded-lg px-2 py-1 bg-[#182132] border border-[#24324c] hover:bg-[#1b2740] transition"
+                        >
+                          {d.name}
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div style={{color:"#cfe0ff", fontWeight:600, marginBottom:4}}>{m.name}</div>
-            <div style={{color:"#91a0bf", fontSize:13, marginBottom:12}}>{m.desc}</div>
-
-            <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8}}>
-              {DIFFS.map(d => (
-                <Link
-                  key={d.id}
-                  href={`/battle?map=${encodeURIComponent(m.id)}&diff=${d.id}`}
-                  style={{
-                    textDecoration:"none",
-                    background:"#1a2236",
-                    border:"1px solid #273150",
-                    borderRadius:10,
-                    padding:"8px 10px",
-                    textAlign:"center",
-                    color:"#cde0ff",
-                    fontSize:12
-                  }}
-                >
-                  {d.label}
-                </Link>
-              ))}
-            </div>
-            <div style={{color:"#6f7ba0", fontSize:12, marginTop:8}}>
-              Consejo: puedes cambiar el mapa/dificultad desde la URL.
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{marginTop:28}}>
-        <Link href="/editor" style={{color:"#7adfff", textDecoration:"underline"}}>
-          Abrir Editor de Mapas JSON
-        </Link>
+          ))}
+        </section>
       </div>
     </main>
   );
