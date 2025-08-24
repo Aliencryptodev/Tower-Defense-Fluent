@@ -30,7 +30,7 @@ type MapDef = {
   }
 };
 
-type FamKey = 'electric' | 'fire' | 'frost';
+type FamKey = 'electric' | 'fire' | 'frost' | 'nature';
 
 type TowerModel = {
   frame: string;
@@ -39,10 +39,11 @@ type TowerModel = {
   dmg: number;
   range: number;
   cd: number;
-  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard';
+  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard' | 'Poison Dart';
   chain?: { hops: number; falloff: number };
   slow?: { factor: number; ms: number };
   dot?: { dps: number; ms: number };
+  tint?: number; // <-- nuevo (para “torre verde”)
 };
 
 async function loadMapDef(name: string): Promise<MapDef> {
@@ -67,16 +68,26 @@ const FROST: TowerModel[] = [
   { frame: 'Frost Cannon III',  fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
   { frame: 'Absolute Zero V',   fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
 ];
-const GROUPS: Record<FamKey, TowerModel[]> = { electric: ELECTRIC, fire: FIRE, frost: FROST };
+
+// 🌿 NATURE / VENENO (usa frames conocidos tintados en verde para evitar __MISSING__)
+const NATURE: TowerModel[] = [
+  { frame: 'Ice Shard I',       fam: 'nature', cost: 45,  dmg: 12, range: 170, cd: 620, projectile: 'Poison Dart', dot: { dps: 8,  ms: 1800 }, tint: 0x66cc66 },
+  { frame: 'Frost Cannon III',  fam: 'nature', cost: 85,  dmg: 18, range: 190, cd: 560, projectile: 'Poison Dart', dot: { dps: 14, ms: 2200 }, tint: 0x55aa55 },
+  { frame: 'Absolute Zero V',   fam: 'nature', cost: 140, dmg: 26, range: 210, cd: 520, projectile: 'Poison Dart', dot: { dps: 22, ms: 2600 }, tint: 0x44aa44 },
+];
+
+const GROUPS: Record<FamKey, TowerModel[]> = {
+  electric: ELECTRIC, fire: FIRE, frost: FROST, nature: NATURE
+};
 
 type PlacedTower = {
   sprite: any;
-  base: TowerModel;                       // modelo de referencia
-  stats: { dmg:number; range:number; cd:number }; // stats actuales (con upgrades)
+  base: TowerModel;
+  stats: { dmg:number; range:number; cd:number };
   level: number;
   last: number;
-  spent: number;                          // oro invertido (para vender)
-  tx: number; ty: number;                 // tile ocupado
+  spent: number;
+  tx: number; ty: number;
 };
 
 /* ------------------------- Escena de Phaser ------------------------- */
@@ -101,7 +112,7 @@ function createSceneClass() {
     selFam: FamKey = 'electric';
     selIdx = 0;
     blockedTiles = new Set<string>();
-    towerTiles = new Set<string>();       // evita colocar encima
+    towerTiles = new Set<string>();
     ready = false;
 
     // HUD
@@ -138,6 +149,9 @@ function createSceneClass() {
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
+      // MUY IMPORTANTE para que sólo el objeto top reciba input
+      this.input.topOnly = true;
+
       const url = new URL(window.location.href);
       const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi, '');
       this.map = await loadMapDef(mapName);
@@ -162,7 +176,7 @@ function createSceneClass() {
 
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · ←/→ cambia skin · Espacio pausa · F x2 · Click torre para Upgrade/Vender`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia skin · Espacio pausa · F x2 · Click torre para Upgrade/Vender`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -177,13 +191,15 @@ function createSceneClass() {
       // Mapa
       this.drawMapFromJSON(this.map);
 
-      // HUD selector visual (bloque superior)
+      // HUD selector visual
       this.buildHUD();
 
-      // Colocar torres (deshabilita si click en HUD o menú)
+      // Colocar torres (NO se ejecuta si el puntero está sobre un objeto interactivo)
       this.input.on('pointerdown', (p: any) => {
-        if (this.menuOpen) { this.closeMenu(); return; }
-        if (p.worldY <= this.hudHeight) return; // no colocar en HUD
+        // si hay un objeto interactivo debajo, no colocamos
+        const hits = (this.input.manager as any).hitTest(p, this.children.list, this.cameras.main);
+        if (hits && hits.length) return;
+
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
@@ -198,6 +214,7 @@ function createSceneClass() {
         const x = tx * this.map.tileSize + this.map.tileSize / 2;
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
         const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300);
+        if (model.tint) spr.setTint(model.tint);
 
         const tw: PlacedTower = {
           sprite: spr,
@@ -212,7 +229,8 @@ function createSceneClass() {
         spr.setInteractive({ cursor: 'pointer' });
         spr.on('pointerover', () => this.showTowerInfo(tw));
         spr.on('pointerout',  () => this.hideTowerInfo());
-        spr.on('pointerdown', (ptr: any) => { this.openMenu(tw); });
+        // abrir menú en pointerUP para no competir con el click de colocar
+        spr.on('pointerup',   () => this.openMenu(tw));
       });
 
       // Teclado
@@ -220,6 +238,7 @@ function createSceneClass() {
         if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; this.refreshHUD(); }
         if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; this.refreshHUD(); }
         if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; this.refreshHUD(); }
+        if (e.key === '4') { this.selFam = 'nature';   this.selIdx = 0; this.refreshHUD(); }
         if (e.key === 'ArrowLeft')  { this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
         if (e.key === 'ArrowRight') { this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
@@ -241,7 +260,7 @@ function createSceneClass() {
       this.hudContainer.add(bg);
 
       const fams: { k: FamKey; label: string }[] = [
-        { k:'electric', label:'⚡' }, { k:'fire', label:'🔥' }, { k:'frost', label:'❄' }
+        { k:'electric', label:'⚡' }, { k:'fire', label:'🔥' }, { k:'frost', label:'❄' }, { k:'nature', label:'🌿' }
       ];
       fams.forEach((f, i) => {
         const t = this.add.text(12 + i*26, 10, f.label, { fontFamily:'monospace', fontSize:'18px', color: this.selFam===f.k ? '#fff' : '#9ab' })
@@ -268,26 +287,29 @@ function createSceneClass() {
     }
 
     refreshHUD() {
-      // actualizar iconos y highlight
       const imgs = this.hudContainer.list.filter((o:any)=>o.texture && o.texture.key==='towers');
       imgs.forEach((img:any)=> {
         const slot = img.__slot as number;
         const arr = GROUPS[this.selFam];
         if (slot < arr.length) {
-          img.setFrame(arr[slot].frame).setVisible(true);
+          const m = arr[slot];
+          img.setFrame(m.frame).setVisible(true);
+          if (m.tint) img.setTint(m.tint); else img.clearTint();
         } else {
           img.setVisible(false);
         }
       });
-      const firstIcon:any = imgs.find((img:any)=> (img.__slot as number)===this.selIdx && img.visible);
-      if (firstIcon) this.selHighlight.setPosition(firstIcon.x - 4, firstIcon.y).setVisible(true);
+      const current = imgs.find((img:any)=> (img.__slot as number)===this.selIdx && img.visible);
+      if (current) this.selHighlight.setPosition(current.x - 4, current.y).setVisible(true);
       else this.selHighlight.setVisible(false);
+
       // recolor labels
       this.hudContainer.list.forEach((o:any)=>{
         if (o.type==='Text') {
           if (o.text==='⚡') o.setColor(this.selFam==='electric' ? '#fff' : '#9ab');
           if (o.text==='🔥') o.setColor(this.selFam==='fire'     ? '#fff' : '#9ab');
           if (o.text==='❄') o.setColor(this.selFam==='frost'    ? '#fff' : '#9ab');
+          if (o.text==='🌿') o.setColor(this.selFam==='nature'   ? '#fff' : '#9ab');
         }
       });
     }
@@ -306,23 +328,23 @@ function createSceneClass() {
 
     /* ------------- Menú Upgrade/Vender ------------- */
     openMenu(t: PlacedTower) {
-      this.closeMenu();
+      this.closeMenu(); // por si hubiera otro
       this.menuOpen = true;
       this.menuFor = t;
 
       const cont = this.add.container(t.sprite.x + 8, t.sprite.y - 8).setDepth(1100);
-      const bg = this.add.rectangle(0,0, 180, 82, 0x0f1728, 0.95).setOrigin(0,1).setStrokeStyle(1,0x4cc2ff,0.8);
+      const bg = this.add.rectangle(0,0, 200, 90, 0x0f1728, 0.95).setOrigin(0,1).setStrokeStyle(1,0x4cc2ff,0.8);
       cont.add(bg);
 
       const dps = (t.stats.dmg * 1000 / t.stats.cd).toFixed(1);
-      const title = this.add.text(6,-72, `${t.base.frame}  (lvl ${t.level})`, {fontFamily:'monospace', fontSize:'12px', color:'#e8f4ff'});
-      const stats = this.add.text(6,-56, `DPS ${dps}  Rng ${t.stats.range}  CD ${t.stats.cd}`, {fontFamily:'monospace', fontSize:'11px', color:'#b7c7ff'});
+      const title = this.add.text(6,-78, `${t.base.frame}  (lvl ${t.level})`, {fontFamily:'monospace', fontSize:'12px', color:'#e8f4ff'});
+      const stats = this.add.text(6,-60, `DPS ${dps}  Rng ${t.stats.range}  CD ${t.stats.cd}`, {fontFamily:'monospace', fontSize:'11px', color:'#b7c7ff'});
       cont.add(title); cont.add(stats);
 
       const upCost = this.upgradeCost(t);
       const sellVal = Math.round(t.spent*0.6);
 
-      const upBtn = this.makeBtn(cont, 6,-36, `Upgrade (+25% dmg)  🪙 ${upCost}`, () => {
+      this.makeBtn(cont, 6,-36, `Upgrade (+25% dmg, +rng, -cd)  🪙 ${upCost}`, () => {
         if (this.gold < upCost) return;
         this.gold -= upCost; this.goldText.setText(`🪙 ${this.gold}`);
         t.level++; t.spent += upCost;
@@ -332,7 +354,7 @@ function createSceneClass() {
         this.openMenu(t); // refrescar
       });
 
-      const sellBtn = this.makeBtn(cont, 6,-12, `Vender  (+🪙 ${sellVal})`, () => {
+      this.makeBtn(cont, 6,-14, `Vender  (+🪙 ${sellVal})`, () => {
         this.gold += sellVal; this.goldText.setText(`🪙 ${this.gold}`);
         const k = this.tileKey(t.tx, t.ty);
         this.towerTiles.delete(k);
@@ -343,10 +365,13 @@ function createSceneClass() {
 
       this.menuContainer = cont;
 
-      // click fuera cierra
-      this.input.once('pointerdown', (p:any) => {
-        const r = new Phaser.Geom.Rectangle(cont.x-2, cont.y-82, 184, 86);
-        if (!Phaser.Geom.Rectangle.Contains(r, p.worldX, p.worldY)) this.closeMenu();
+      // Cerrar al click fuera (en el *siguiente* tick, para no cerrarlo al abrir)
+      this.time.delayedCall(0, () => {
+        this.input.once('pointerdown', (p:any) => {
+          if (!this.menuContainer) return;
+          const r = new Phaser.Geom.Rectangle(this.menuContainer.x-2, this.menuContainer.y-90, 204, 94);
+          if (!Phaser.Geom.Rectangle.Contains(r, p.worldX, p.worldY)) this.closeMenu();
+        });
       });
     }
 
@@ -359,10 +384,10 @@ function createSceneClass() {
 
     makeBtn(parent:any, x:number, y:number, label:string, onClick:()=>void) {
       const btn = this.add.container(x,y);
-      const r = this.add.rectangle(0,0, 168, 18, 0x173055, 0.9).setOrigin(0,0.5).setStrokeStyle(1,0x4cc2ff,0.6);
+      const r = this.add.rectangle(0,0, 188, 18, 0x173055, 0.9).setOrigin(0,0.5).setStrokeStyle(1,0x4cc2ff,0.6);
       const t = this.add.text(6,0,label,{fontFamily:'monospace', fontSize:'11px', color:'#d8e7ff'}).setOrigin(0,0.5);
       btn.add([r,t]);
-      btn.setSize(168,18).setInteractive({useHandCursor:true});
+      btn.setSize(188,18).setInteractive({useHandCursor:true});
       btn.on('pointerdown', onClick);
       parent.add(btn);
       return btn;
@@ -542,7 +567,7 @@ function createSceneClass() {
         e.speed = old * slowFactor;
         this.time.delayedCall(slowMs, () => e && (e.speed = old));
       }
-      if (fam === 'fire' && proj.dot) {
+      if ((fam === 'fire' || fam === 'nature') && proj.dot) {
         const dotDps: number = proj.dot.dps;
         const dotMs: number = proj.dot.ms;
         const ticks = Math.floor(dotMs / 300);
@@ -602,7 +627,7 @@ function createSceneClass() {
         if (hit) this.doHit(p, hit);
       });
 
-      // Si hay menú abierto, que siga a la torre
+      // Seguir torre con el menú
       if (this.menuOpen && this.menuContainer && this.menuFor) {
         this.menuContainer.setPosition(this.menuFor.sprite.x + 8, this.menuFor.sprite.y - 8);
       }
@@ -647,7 +672,7 @@ export default function BattleClient() {
         Fluent Tower Defense — MVP++
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>←/→</b> cambia skin ·
+        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ / <b>4</b>=🌿 · <b>←/→</b> cambia skin ·
         <b> Espacio</b> pausa · <b>F</b> x2 · Click torre para <b>Upgrade/Vender</b>
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
