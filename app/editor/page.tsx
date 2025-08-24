@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 // Tipos compatibles con el runtime
 type MapPoint = { x: number; y: number };
@@ -8,18 +8,13 @@ type MapRect  = { x: number; y: number; w: number; h: number };
 type MapDef = {
   name: string;
   tileSize: number; width: number; height: number;
-  // Frame base del camino si no hay overrides
   terrain: string;
-  // NUEVO: imagen de fondo (puede ser URL absoluta/relativa o dataURL) + opacidad
   preview?: string;
   previewAlpha?: number;
-  // NUEVO: skin por carril (frame del atlas terrain_64) y overrides por casilla "x,y" -> frame
   pathSkins?: string[];
   pathFrames?: Record<string, string>;
-  // Bloqueos
   buildMask: MapRect[];
   paths: MapPoint[][];
-  // Waves igual que ahora
   waves: {
     baseCount: number; countPerWave: number;
     baseHP: number; hpPerWave: number;
@@ -48,11 +43,7 @@ const DEFAULT_MAP: MapDef = {
   }
 };
 
-// Frames que vamos a ofrecer del atlas terrain_64
-const SUGGESTED_FRAMES = [
-  'Grass Path', 'Snow Path', 'Stone Path', 'Lava Path'
-];
-
+const SUGGESTED_FRAMES = ['Grass Path','Snow Path','Stone Path','Lava Path'] as const;
 type Tool = 'pan' | 'path0' | 'path1' | 'mask' | 'erase' | 'override';
 
 export default function MapEditorPage() {
@@ -61,10 +52,8 @@ export default function MapEditorPage() {
     return fromLS ? JSON.parse(fromLS) as MapDef : DEFAULT_MAP;
   });
 
-  // Estado UI
   const [tool, setTool] = useState<Tool>('path0');
-  const [currentSkin, setCurrentSkin] = useState<string>('Grass Path'); // para override/marcar skin de carril
-  const [activeLane, setActiveLane] = useState<number>(0); // para path0/path1 toggle rápido
+  const [currentSkin, setCurrentSkin] = useState<string>('Grass Path');
   const [isPanning, setIsPanning] = useState(false);
   const [offset, setOffset] = useState({x:0, y:0});
   const startPan = useRef<{x:number,y:number} | null>(null);
@@ -81,7 +70,7 @@ export default function MapEditorPage() {
     localStorage.setItem('td_editor_map', JSON.stringify(map));
   }, [map]);
 
-  // Dibujo
+  // --- Dibujo (ARREGLADO ORDEN: base -> imagen -> overlays) ---
   useEffect(() => {
     const cvs = canvasRef.current;
     if (!cvs) return;
@@ -89,80 +78,71 @@ export default function MapEditorPage() {
     const g = cvs.getContext('2d');
     if (!g) return;
 
-    g.clearRect(0,0,pxW,pxH);
+    const drawOverlays = () => {
+      // grid tenue
+      g.strokeStyle = 'rgba(255,255,255,0.06)';
+      for (let x = 0; x <= map.width; x++) {
+        g.beginPath(); g.moveTo(x*map.tileSize, 0); g.lineTo(x*map.tileSize, pxH); g.stroke();
+      }
+      for (let y = 0; y <= map.height; y++) {
+        g.beginPath(); g.moveTo(0, y*map.tileSize); g.lineTo(pxW, y*map.tileSize); g.stroke();
+      }
 
-    // fondo (preview)
+      // buildMask
+      g.fillStyle = 'rgba(255,80,80,0.25)';
+      for (const r of map.buildMask) {
+        g.fillRect(r.x*map.tileSize, r.y*map.tileSize, r.w*map.tileSize, r.h*map.tileSize);
+      }
+
+      // overrides por casilla
+      Object.entries(map.pathFrames ?? {}).forEach(([key, frame])=>{
+        const [tx, ty] = key.split(',').map(Number);
+        g.fillStyle = frameColor(frame);
+        g.fillRect(tx*map.tileSize, ty*map.tileSize, map.tileSize, map.tileSize);
+      });
+
+      // paths por carril
+      for (let lane=0; lane<map.paths.length; lane++) {
+        const col = laneColors[lane % laneColors.length];
+        const points = map.paths[lane];
+        g.fillStyle = hexA(col, 0.18);
+        for (const p of points) {
+          g.fillRect(p.x*map.tileSize, p.y*map.tileSize, map.tileSize, map.tileSize);
+        }
+        g.strokeStyle = hexA(col, 0.9);
+        g.lineWidth = 2;
+        g.beginPath();
+        points.forEach((p,i)=>{
+          const cx = p.x*map.tileSize + map.tileSize/2;
+          const cy = p.y*map.tileSize + map.tileSize/2;
+          if (i===0) g.moveTo(cx,cy); else g.lineTo(cx,cy);
+        });
+        g.stroke();
+      }
+    };
+
+    // limpiar + base
+    g.clearRect(0,0,pxW,pxH);
+    g.fillStyle = '#0c0e12';
+    g.fillRect(0,0,pxW,pxH);
+
+    // imagen de fondo (si hay)
     if (map.preview) {
       const img = new Image();
       img.onload = () => {
         g.save();
-        g.globalAlpha = map.previewAlpha ?? 0.28;
+        g.globalAlpha = Math.min(1, Math.max(0, map.previewAlpha ?? 0.28));
         g.drawImage(img, 0, 0, pxW, pxH);
         g.restore();
-        drawGridAndData(g);
+        drawOverlays();
       };
       img.src = map.preview;
     } else {
-      drawGridAndData(g);
-    }
-
-    function drawGridAndData(ctx: CanvasRenderingContext2D) {
-      // base
-      ctx.fillStyle = '#0c0e12';
-      ctx.fillRect(0,0,pxW,pxH);
-
-      // grid
-      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-      for (let x = 0; x <= map.width; x++) {
-        ctx.beginPath();
-        ctx.moveTo(x*map.tileSize, 0);
-        ctx.lineTo(x*map.tileSize, pxH);
-        ctx.stroke();
-      }
-      for (let y = 0; y <= map.height; y++) {
-        ctx.beginPath();
-        ctx.moveTo(0, y*map.tileSize);
-        ctx.lineTo(pxW, y*map.tileSize);
-        ctx.stroke();
-      }
-
-      // buildMask preview (como celdas)
-      ctx.fillStyle = 'rgba(255,80,80,0.25)';
-      for (const r of map.buildMask) {
-        ctx.fillRect(r.x*map.tileSize, r.y*map.tileSize, r.w*map.tileSize, r.h*map.tileSize);
-      }
-
-      // path frames override (tiles distintos)
-      Object.entries(map.pathFrames ?? {}).forEach(([key, frame])=>{
-        const [tx, ty] = key.split(',').map(Number);
-        ctx.fillStyle = frameColor(frame);
-        ctx.fillRect(tx*map.tileSize, ty*map.tileSize, map.tileSize, map.tileSize);
-      });
-
-      // dibujar paths (por carril)
-      for (let lane=0; lane<map.paths.length; lane++) {
-        const col = laneColors[lane % laneColors.length];
-        const points = map.paths[lane];
-        // casillas
-        ctx.fillStyle = hexA(col, 0.18);
-        for (const p of points) {
-          ctx.fillRect(p.x*map.tileSize, p.y*map.tileSize, map.tileSize, map.tileSize);
-        }
-        // conexión
-        ctx.strokeStyle = hexA(col, 0.9);
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        points.forEach((p,i)=>{
-          const cx = p.x*map.tileSize + map.tileSize/2;
-          const cy = p.y*map.tileSize + map.tileSize/2;
-          if (i===0) ctx.moveTo(cx,cy); else ctx.lineTo(cx,cy);
-        });
-        ctx.stroke();
-      }
+      drawOverlays();
     }
   }, [map, pxW, pxH]);
 
-  // Interacción
+  // ------- Interacción -------
   const tileFromMouse = (ev: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = (ev.target as HTMLCanvasElement).getBoundingClientRect();
     const mx = (ev.clientX - rect.left);
@@ -179,7 +159,6 @@ export default function MapEditorPage() {
       startPan.current = {x: ev.clientX - offset.x, y: ev.clientY - offset.y};
       return;
     }
-
     const t = tileFromMouse(ev);
     if (!t) return;
 
@@ -194,7 +173,7 @@ export default function MapEditorPage() {
       setMap(m => {
         const key = `${t.tx},${t.ty}`;
         const next = {...m, pathFrames: {...(m.pathFrames||{})} };
-        if (currentSkin) next.pathFrames![key] = currentSkin;
+        next.pathFrames![key] = currentSkin;
         return next;
       });
     }
@@ -213,7 +192,7 @@ export default function MapEditorPage() {
       setMap(m => {
         const key = `${t.tx},${t.ty}`;
         const next = {...m, pathFrames: {...(m.pathFrames||{})} };
-        if (currentSkin) next.pathFrames![key] = currentSkin;
+        next.pathFrames![key] = currentSkin;
         return next;
       });
     }
@@ -223,12 +202,10 @@ export default function MapEditorPage() {
   function addPointToPath(lane: number, x:number, y:number) {
     setMap(m => {
       const paths = m.paths.map(p => [...p]);
-      // Evita duplicados consecutivos
       const last = paths[lane][paths[lane].length-1];
       if (!last || last.x !== x || last.y !== y) {
         paths[lane].push({x,y});
       }
-      // Asegura pathSkins length
       const pathSkins = (m.pathSkins && m.pathSkins.length>=m.paths.length)
         ? [...m.pathSkins]
         : Array.from({length: m.paths.length}, (_,i)=> m.pathSkins?.[i] ?? m.terrain);
@@ -236,8 +213,7 @@ export default function MapEditorPage() {
     });
   }
 
-  function toggleMaskCell(x:number,y:number, dragging=false) {
-    // Guardamos como rects; para edición simple usamos "celda=rect de 1x1"
+  function toggleMaskCell(x:number,y:number,_drag=false) {
     setMap(m => {
       const bm = [...m.buildMask];
       const idx = bm.findIndex(r => r.x===x && r.y===y && r.w===1 && r.h===1);
@@ -257,7 +233,6 @@ export default function MapEditorPage() {
     });
   }
 
-  // Export JSON (comprime los buildMask 1x1 en rectángulos más grandes por filas)
   const exportJSON = () => {
     const merged = mergeRects(map.buildMask, map.width, map.height);
     const data: MapDef = {...map, buildMask: merged};
@@ -269,7 +244,6 @@ export default function MapEditorPage() {
     URL.revokeObjectURL(a.href);
   };
 
-  // Export PNG de la vista (con fondo si hay)
   const exportPNG = () => {
     const cvs = canvasRef.current;
     if (!cvs) return;
@@ -283,7 +257,6 @@ export default function MapEditorPage() {
     });
   };
 
-  // Import JSON
   const onImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -291,7 +264,6 @@ export default function MapEditorPage() {
     rd.onload = () => {
       try {
         const obj = JSON.parse(rd.result as string) as MapDef;
-        // sanity
         setMap(prev => ({
           ...prev,
           ...obj,
@@ -304,7 +276,6 @@ export default function MapEditorPage() {
     rd.readAsText(f);
   };
 
-  // Cargar imagen de fondo como dataURL
   const onImportBg = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -314,8 +285,7 @@ export default function MapEditorPage() {
   };
 
   return (
-    <div style={{display:'grid', gridTemplateColumns:'320px 1fr', height:'100%', minHeight:'100vh'}}>
-      {/* Sidebar */}
+    <div style={{display:'grid', gridTemplateColumns:'320px 1fr', minHeight:'100vh'}}>
       <div style={{padding:12, background:'#0b1220', color:'#e8f4ff', fontFamily:'monospace', borderRight:'1px solid #162033'}}>
         <h2 style={{margin:'6px 0'}}>Editor de Mapas</h2>
 
@@ -414,11 +384,10 @@ export default function MapEditorPage() {
 
         <div style={{marginTop:12, fontSize:12, opacity:0.8}}>
           Consejos: Click para añadir steps del camino (en orden). “Mask” marca celdas no construibles.
-          “Override” te deja mezclar frames de camino por casilla para efectos estéticos.
+          “Override” mezcla frames de camino por casilla para estética. Si usas dataURL también funciona.
         </div>
       </div>
 
-      {/* Lienzo */}
       <div style={{position:'relative', overflow:'auto', background:'#04070f'}}>
         <div style={{width:pxW, height:pxH, transform:`translate(${offset.x}px,${offset.y}px)`}}>
           <canvas
@@ -435,10 +404,8 @@ export default function MapEditorPage() {
   );
 }
 
-/* ---------- helpers de editor ---------- */
-
+/* ---------- helpers ---------- */
 const laneColors = ['#4cc2ff', '#ff8a4c', '#9dff6b', '#fef45d'];
-
 function hexA(hex: string, a: number) {
   const c = hex.replace('#','');
   const r = parseInt(c.substring(0,2),16);
@@ -446,7 +413,6 @@ function hexA(hex: string, a: number) {
   const b = parseInt(c.substring(4,6),16);
   return `rgba(${r},${g},${b},${a})`;
 }
-
 function frameColor(frame: string) {
   switch (frame) {
     case 'Grass Path': return 'rgba(50,200,120,0.25)';
@@ -456,10 +422,7 @@ function frameColor(frame: string) {
     default:           return 'rgba(140,160,200,0.25)';
   }
 }
-
-// Une rectángulos 1x1 en franjas por fila (simple y suficiente)
 function mergeRects(cells: MapRect[], width:number, height:number): MapRect[] {
-  // Creamos mapa de celdas booleanas
   const grid:boolean[][] = Array.from({length:height}, ()=> Array.from({length:width}, ()=>false));
   for (const r of cells) {
     for (let x=r.x; x<r.x+r.w; x++) for (let y=r.y; y<r.y+r.h; y++) {
@@ -471,7 +434,7 @@ function mergeRects(cells: MapRect[], width:number, height:number): MapRect[] {
     let x=0;
     while (x<width) {
       if (!grid[y][x]) { x++; continue; }
-      let x0 = x;
+      const x0=x;
       while (x<width && grid[y][x]) x++;
       out.push({x:x0, y, w:x-x0, h:1});
     }
