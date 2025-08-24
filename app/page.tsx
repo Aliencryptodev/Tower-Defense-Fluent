@@ -1,12 +1,15 @@
 // app/page.tsx  (Server Component)
 import Link from "next/link";
 
-const MAPS: { id: string; name: string; desc: string; preview?: string }[] = [
-  { id: "grass_dual", name: "Grass — Dual Lanes", desc: "Dos carriles, ritmo alto." },
-  // Si tienes más mapas en /public/maps/<id>.json, añádelos aquí:
-  // { id: "desert_cross", name: "Desert — Cross", desc: "Cruces y atajos." },
-  // { id: "ice_spiral", name: "Ice — Spiral", desc: "Espiral de sufrimiento." },
+const MAPS = [
+  { id: "grass_dual",  name: "Grass — Dual Lanes", desc: "Dos carriles, ritmo alto.", preview: "/previews/grass_dual.png" },
+  { id: "desert_cross", name: "Desert — Cross", desc: "Cruces y atajos.", preview: "/previews/desert_cross.png" },
+  { id: "ice_spiral",   name: "Ice — Spiral", desc: "Espiral hacia el centro.", preview: "/previews/ice_spiral.png" },
+  { id: "forest_maze",  name: "Forest — Maze", desc: "Zig-zag laberíntico.", preview: "/previews/forest_maze.png" },
+  { id: "lava_twins",   name: "Lava — Twins", desc: "Carriles paralelos.", preview: "/previews/lava_twins.png" },
+  { id: "cliffs_long",  name: "Cliffs — Long", desc: "Serpenteo largo.", preview: "/previews/cliffs_long.png" }
 ];
+
 
 const DIFFS: { id: "easy"|"normal"|"hard"|"insane"; label: string; hint: string }[] = [
   { id: "easy",   label: "Easy",   hint: "Para calentar motores" },
