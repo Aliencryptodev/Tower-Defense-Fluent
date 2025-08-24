@@ -89,7 +89,11 @@ function createSceneClass() {
 
     enemies!: any;
     projectiles!: any;
-    towers: { sprite: any; model: TowerModel; last: number; level: number; totalSpent: number; panel?: any }[] = [];
+
+    towers: {
+      sprite: any; model: TowerModel; last: number; level: number; totalSpent: number;
+      panel?: any;
+    }[] = [];
 
     goldText!: any;
     infoText!: any;
@@ -98,14 +102,12 @@ function createSceneClass() {
 
     selFam: FamKey = 'electric';
     selIdx = 0;
-    blockedTiles = new Set<string>();
+    blockedTiles = new Set<string>();   // caminos/zonas bloqueadas
+    occupiedTiles = new Set<string>();  // tiles ocupados por torres
     ready = false;
 
     // Música
     bgm!: any;
-
-    // Para evitar colocar torre al pinchar UI
-    clickConsumed = false;
 
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
@@ -168,14 +170,17 @@ function createSceneClass() {
       // Pintar mapa
       this.drawMapFromJSON(this.map);
 
-      // Colocar torres
-      this.input.on('pointerdown', (p: any) => {
-        if (this.clickConsumed) { this.clickConsumed = false; return; }
+      // Handler global de colocar torres — con hit-test para NO colocar sobre UI/torre
+      this.input.on('pointerdown', (pointer: any) => {
+        const hits = this.input.hitTestPointer(pointer) as any[];
+        if (hits && hits.some((o: any) => o?.getData?.('ui') || o?.getData?.('tower'))) return;
 
         const model = GROUPS[this.selFam][this.selIdx];
-        const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
+        const { tx, ty } = this.worldToTile(pointer.worldX, pointer.worldY);
         if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
-        if (this.blockedTiles.has(this.tileKey(tx, ty))) return;
+
+        const key = this.tileKey(tx, ty);
+        if (this.blockedTiles.has(key) || this.occupiedTiles.has(key)) return;
         if (this.gold < model.cost) return;
 
         this.gold -= model.cost;
@@ -185,14 +190,21 @@ function createSceneClass() {
         const x = tx * this.map.tileSize + this.map.tileSize / 2;
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
         const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300);
+        spr.setData('tower', true);
+        spr.setData('tileKey', key);
 
         const tower = { sprite: spr, model, last: 0, level: 0, totalSpent: model.cost } as any;
         this.towers.push(tower);
+        this.occupiedTiles.add(key);
 
         spr.setInteractive({ cursor: 'pointer' });
         spr.on('pointerover', () => this.showTowerTooltip(tower));
         spr.on('pointerout', () => { this.rangeCircle.setVisible(false); this.tooltip.setVisible(false); });
-        spr.on('pointerdown', () => this.openTowerPanel(tower));
+        // Detener propagación para que NO se coloque una torre
+        spr.on('pointerdown', (_p: any, _lx: number, _ly: number, event: any) => {
+          event?.stopPropagation?.();
+          this.openTowerPanel(tower);
+        });
       });
 
       // Teclado
@@ -325,7 +337,6 @@ function createSceneClass() {
       const range  = m.range + 12 * L;       // +12 rango por nivel
       const dmg    = Math.round(m.dmg * dmgMul);
 
-      // Clonar ajustes que escalan
       const dot = m.dot ? { dps: Math.round(m.dot.dps * dmgMul), ms: m.dot.ms } : undefined;
       const slow = m.slow ? { factor: Math.max(0.5, m.slow.factor), ms: m.slow.ms + 100 * L } : undefined;
       const chain = m.chain ? { ...m.chain } : undefined;
@@ -333,13 +344,11 @@ function createSceneClass() {
       return { dmg, range, cd: Math.max(120, Math.round(m.cd * cdMul)), projectile: m.projectile, fam: m.fam, dot, slow, chain, frame: m.frame };
     }
 
-    /** Coste de upgrade (geométrico) */
     getUpgradeCost(t: { model: TowerModel; level: number }) {
       const base = t.model.cost;
-      return Math.round(base * Math.pow(1.45, t.level + 1)); // L0->1 ~1.45x, etc.
+      return Math.round(base * Math.pow(1.45, t.level + 1));
     }
 
-    /** Reembolso de venta: 70% de lo invertido total */
     getSellRefund(t: { totalSpent: number }) {
       return Math.max(1, Math.floor(t.totalSpent * 0.7));
     }
@@ -364,7 +373,13 @@ function createSceneClass() {
       const upCost = this.getUpgradeCost(t);
       const refund = this.getSellRefund(t);
 
+      // Contenedor interactivo (para que el hit-test lo detecte como UI)
       const container = this.add.container(t.sprite.x + 56, t.sprite.y - 6).setDepth(500);
+      container.setSize(160, 70);
+      // @ts-ignore
+      container.setInteractive(new PhaserLib.Geom.Rectangle(-80, -35, 160, 70), PhaserLib.Geom.Rectangle.Contains);
+      container.setData('ui', true);
+
       const bg = this.add.rectangle(0, 0, 160, 70, 0x0e1420, 0.92).setStrokeStyle(1, 0x6aa0ff, 0.8);
       const title = this.add.text(-70, -28, `Lvl ${t.level}`, { fontFamily: 'monospace', fontSize: '12px', color: '#9ad0ff' });
 
@@ -376,14 +391,17 @@ function createSceneClass() {
 
       const closeX = this.add.text(66, -32, '✕', { fontFamily: 'monospace', fontSize: '12px', color: '#cbd5ff' });
 
-      [bg, btnUp, btnSell, txtUp, txtSell, title, closeX].forEach(it => { (it as any).setInteractive?.(); });
+      [bg, btnUp, btnSell, txtUp, txtSell, title, closeX].forEach((it: any) => {
+        it.setInteractive?.();
+        it.setData?.('ui', true);
+      });
 
       container.add([bg, title, btnUp, txtUp, btnSell, txtSell, closeX]);
 
-      const consume = () => { this.clickConsumed = true; this.time.delayedCall(0, () => (this.clickConsumed = false)); };
+      const stop = (_p: any, _lx: any, _ly: any, event: any) => event?.stopPropagation?.();
 
-      btnUp.on('pointerup', () => {
-        consume();
+      btnUp.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
+        stop(p, lx, ly, event);
         const cost = this.getUpgradeCost(t);
         if (this.gold < cost) return;
         this.gold -= cost;
@@ -392,15 +410,17 @@ function createSceneClass() {
         t.totalSpent += cost;
         try { this.sound.play('coin', { volume: 0.2 }); } catch {}
         this.showTowerTooltip(t);
-        this.closeTowerPanel(t); // cierra y fuerza recalcular texto si reabre
+        this.closeTowerPanel(t);
       });
 
-      btnSell.on('pointerup', () => {
-        consume();
+      btnSell.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
+        stop(p, lx, ly, event);
         const refundVal = this.getSellRefund(t);
         this.gold += refundVal;
         this.goldText.setText(`🪙 ${this.gold}`);
         try { this.sound.play('coin', { volume: 0.25 }); } catch {}
+        const tk = t.sprite.getData('tileKey');
+        if (tk) this.occupiedTiles.delete(tk);
         t.sprite.destroy();
         this.closeTowerPanel(t);
         this.towers = this.towers.filter((x: any) => x !== t);
@@ -408,7 +428,13 @@ function createSceneClass() {
         this.tooltip.setVisible(false);
       });
 
-      closeX.on('pointerup', () => { consume(); this.closeTowerPanel(t); });
+      closeX.on('pointerup', (p: any, lx: any, ly: any, event: any) => {
+        stop(p, lx, ly, event);
+        this.closeTowerPanel(t);
+      });
+
+      // Evita que un click en el panel coloque torres
+      container.on('pointerdown', stop);
 
       t.panel = container;
     }
@@ -477,7 +503,6 @@ function createSceneClass() {
 
       e.hp -= baseDmg;
 
-      // Capturar valores en constantes (no referenciar `proj` luego)
       if (fam === 'frost' && proj.slow) {
         const slowFactor: number = proj.slow.factor;
         const slowMs: number = proj.slow.ms;
