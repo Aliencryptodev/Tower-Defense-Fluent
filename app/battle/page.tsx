@@ -3,9 +3,10 @@
 
 import dynamicImport from 'next/dynamic';
 
-// Fuerza render dinámico (sin SSG/ISR) y sin cache
+// Fuerza render dinámico (evita SSG/ISR para /battle)
 export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+// Opcional, refuerza no-cache en fetch()
+export const fetchCache = 'force-no-store';
 
 // Renderiza el juego solo en cliente (sin SSR)
 const BattleClient = dynamicImport(() => import('./BattleClient'), {
