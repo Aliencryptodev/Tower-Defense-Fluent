@@ -1,0 +1,22 @@
+{
+  "name": "grass_dual",
+  "tileSize": 64,
+  "width": 20,
+  "height": 10,
+  "terrain": "Grass Path",
+  "buildMask": [],
+  "paths": [
+    [{ "x": -1, "y": 3 }, { "x": 0, "y": 3 }, { "x": 19, "y": 3 }, { "x": 20, "y": 3 }],
+    [{ "x": -1, "y": 5 }, { "x": 0, "y": 5 }, { "x": 19, "y": 5 }, { "x": 20, "y": 5 }]
+  ],
+  "waves": {
+    "baseCount": 10,
+    "countPerWave": 2,
+    "baseHP": 28,
+    "hpPerWave": 8,
+    "baseSpeed": 52,
+    "speedPerWave": 2,
+    "spawnDelayMs": 600,
+    "rewardBase": 4
+  }
+}
