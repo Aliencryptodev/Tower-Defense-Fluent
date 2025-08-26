@@ -1,8 +1,0 @@
-{
-  "biome": "snow",
-  "gridW": 18,
-  "gridH": 9,
-  "lanes": [0, 2],
-  "hpMul": 1.15,
-  "speedMul": 0.95
-}
