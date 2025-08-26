@@ -16,6 +16,10 @@ type MapDef = {
   name: string;
   tileSize: number; width: number; height: number;
   terrain: string;
+  preview?: string;
+  previewAlpha?: number;
+  pathSkins?: string[];
+  pathFrames?: Record<string, string>;
   buildMask: MapRect[];
   paths: MapPoint[][];
   waves: {
@@ -26,7 +30,7 @@ type MapDef = {
   }
 };
 
-type FamKey = 'electric' | 'fire' | 'frost';
+type FamKey = 'electric' | 'fire' | 'frost' | 'nature';
 
 type TowerModel = {
   frame: string;
@@ -35,10 +39,11 @@ type TowerModel = {
   dmg: number;
   range: number;
   cd: number;
-  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard';
+  projectile: 'Lightning Bolt' | 'Fireball' | 'Ice Shard' | 'Poison Dart';
   chain?: { hops: number; falloff: number };
   slow?: { factor: number; ms: number };
   dot?: { dps: number; ms: number };
+  tint?: number; // <-- nuevo (para “torre verde”)
 };
 
 async function loadMapDef(name: string): Promise<MapDef> {
@@ -63,7 +68,27 @@ const FROST: TowerModel[] = [
   { frame: 'Frost Cannon III',  fam: 'frost', cost: 85,  dmg: 26, range: 200, cd: 560, projectile: 'Ice Shard', slow: { factor: 0.6, ms: 1500 } },
   { frame: 'Absolute Zero V',   fam: 'frost', cost: 140, dmg: 40, range: 220, cd: 520, projectile: 'Ice Shard', slow: { factor: 0.5, ms: 1800 } },
 ];
-const GROUPS: Record<FamKey, TowerModel[]> = { electric: ELECTRIC, fire: FIRE, frost: FROST };
+
+// 🌿 NATURE / VENENO (usa frames conocidos tintados en verde para evitar __MISSING__)
+const NATURE: TowerModel[] = [
+  { frame: 'Ice Shard I',       fam: 'nature', cost: 45,  dmg: 12, range: 170, cd: 620, projectile: 'Poison Dart', dot: { dps: 8,  ms: 1800 }, tint: 0x66cc66 },
+  { frame: 'Frost Cannon III',  fam: 'nature', cost: 85,  dmg: 18, range: 190, cd: 560, projectile: 'Poison Dart', dot: { dps: 14, ms: 2200 }, tint: 0x55aa55 },
+  { frame: 'Absolute Zero V',   fam: 'nature', cost: 140, dmg: 26, range: 210, cd: 520, projectile: 'Poison Dart', dot: { dps: 22, ms: 2600 }, tint: 0x44aa44 },
+];
+
+const GROUPS: Record<FamKey, TowerModel[]> = {
+  electric: ELECTRIC, fire: FIRE, frost: FROST, nature: NATURE
+};
+
+type PlacedTower = {
+  sprite: any;
+  base: TowerModel;
+  stats: { dmg:number; range:number; cd:number };
+  level: number;
+  last: number;
+  spent: number;
+  tx: number; ty: number;
+};
 
 /* ------------------------- Escena de Phaser ------------------------- */
 function createSceneClass() {
@@ -77,7 +102,7 @@ function createSceneClass() {
 
     enemies!: any;
     projectiles!: any;
-    towers: { sprite: any; model: TowerModel; last: number }[] = [];
+    towers: PlacedTower[] = [];
 
     goldText!: any;
     infoText!: any;
@@ -87,13 +112,23 @@ function createSceneClass() {
     selFam: FamKey = 'electric';
     selIdx = 0;
     blockedTiles = new Set<string>();
+    towerTiles = new Set<string>();
     ready = false;
+
+    // HUD
+    hudHeight = 84;
+    hudContainer!: any;
+    selHighlight!: any;
+
+    // Menú torre
+    menuContainer?: any;
+    menuFor?: PlacedTower | null;
+    menuOpen = false;
 
     worldToTile(x: number, y: number) { return { tx: Math.floor(x / this.map.tileSize), ty: Math.floor(y / this.map.tileSize) }; }
     tileKey(tx: number, ty: number) { return `${tx},${ty}`; }
 
     preload() {
-      // Atlases
       this.load.atlas('terrain64',  '/assets/terrain_atlas.png',     '/assets/terrain_atlas.json');
       this.load.atlas('ui32',       '/assets/ui_atlas.png',          '/assets/ui_atlas.json');
       this.load.atlas('towers',     '/assets/towers_atlas.png',      '/assets/towers_atlas.json');
@@ -103,75 +138,45 @@ function createSceneClass() {
       this.load.atlas('projectiles','/assets/projectiles_atlas.png', '/assets/projectiles_atlas.json');
       this.load.atlas('fx',         '/assets/effects_atlas.png',     '/assets/effects_atlas.json');
 
-      // Audio (WAV para evitar 404 si no hay MP3)
-      try { this.load.audio('coin',  '/audio/coin.wav'); } catch {}
-      try { this.load.audio('hit',   '/audio/hit.wav'); } catch {}
-      try { this.load.audio('place', '/audio/place.wav'); } catch {}
-      try { this.load.audio('shoot', '/audio/shot.wav'); } catch {}
-      try { this.load.audio('music', '/audio/music.wav'); } catch {}
+      try { this.load.audio('coin',  ['/audio/coin.mp3',  '/audio/coin.wav']); } catch {}
+      try { this.load.audio('hit',   ['/audio/hit.mp3',   '/audio/hit.wav']); } catch {}
+      try { this.load.audio('place', ['/audio/place.mp3', '/audio/place.wav']); } catch {}
+      try { this.load.audio('shoot', ['/audio/shoot.mp3','/audio/shoot.wav','/audio/shot.wav']); } catch {}
+      try { this.load.audio('music', ['/audio/music.mp3','/audio/music.wav']); } catch {}
     }
 
-    /* ---------- HELPERS de partículas (Phaser 3.60+) ---------- */
-
-    /** Burst puntual (explosión) */
-    burst(x: number, y: number, key: string, frame?: string, cfg: any = {}, qty = 16) {
-      const emitter = this.add.particles(x, y, key, frame as any, {
-        lifespan: 350,
-        speed: { min: 80, max: 180 },
-        scale: { start: 0.8, end: 0 },
-        alpha: { start: 1, end: 0 },
-        gravityY: 0,
-        blendMode: 'ADD',
-        emitting: false,
-        ...cfg,
-      });
-      emitter.explode(qty, x, y);
-      this.time.delayedCall(500, () => {
-        try { emitter.stop(); } catch {}
-        try { (emitter as any).manager?.destroy(); } catch {}
-      });
-      return emitter;
-    }
-
-    /** Trail que sigue a un sprite (proyectil, etc.) */
-    trail(followTarget: any, key: string, frame?: string, cfg: any = {}) {
-      const emitter = this.add.particles(followTarget.x, followTarget.y, key, frame as any, {
-        lifespan: 250,
-        speed: 0,
-        frequency: 40,
-        quantity: 1,
-        scale: { start: 0.7, end: 0 },
-        alpha: { start: 0.6, end: 0 },
-        follow: followTarget,
-        blendMode: 'ADD',
-        emitting: true,
-        ...cfg,
-      });
-      const stop = () => { try { emitter.stop(); } catch {} };
-      followTarget.on?.('destroy', stop);
-      return emitter;
-    }
-
-    /* -------------------------- create -------------------------- */
     async create() {
-      // Grupos antes de cualquier await
       this.enemies = this.add.group();
       this.projectiles = this.add.group();
 
-      // Cargar mapa
+      // MUY IMPORTANTE para que sólo el objeto top reciba input
+      this.input.topOnly = true;
+
       const url = new URL(window.location.href);
       const mapName = (url.searchParams.get('map') || 'grass_dual').replace(/[^a-z0-9_\-]/gi, '');
       this.map = await loadMapDef(mapName);
+
+      if (this.map.preview) {
+        const key = 'mapBg';
+        this.load.image(key, this.map.preview);
+        this.load.once('complete', () => {
+          const img = this.add.image(0, 0, key).setOrigin(0, 0).setDepth(5);
+          img.setDisplaySize(this.map.width * this.map.tileSize, this.map.height * this.map.tileSize);
+          img.setAlpha(Math.min(1, Math.max(0, this.map.previewAlpha ?? 0.28)));
+        });
+        this.load.start();
+      }
+
       this.cameras.main.setBackgroundColor('#0c0e12');
 
-      // UI
+      // UI textos
       this.goldText = this.add.text(16, 16, `🪙 ${this.gold}`, {
         color: '#ffd76a', fontFamily: 'monospace', fontSize: '18px'
       }).setDepth(1000);
 
       this.infoText = this.add.text(
         16, 34,
-        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ · ←/→ cambia skin · Espacio pausa · F x2 · ENTER inicia oleada · Click torre para Upgrade/Vender`,
+        `Click coloca · 1=⚡ / 2=🔥 / 3=❄ / 4=🌿 · ←/→ cambia skin · Espacio pausa · F x2 · Click torre para Upgrade/Vender`,
         { color: '#b7c7ff', fontFamily: 'monospace', fontSize: '12px' }
       ).setDepth(1000);
 
@@ -183,21 +188,23 @@ function createSceneClass() {
       this.rangeCircle = this.add.circle(0, 0, 50, 0x4cc2ff, 0.12)
         .setStrokeStyle(2, 0x4cc2ff, 0.8).setDepth(200).setVisible(false);
 
-      // Pintar mapa
+      // Mapa
       this.drawMapFromJSON(this.map);
 
-      // Colocar torres
+      // HUD selector visual
+      this.buildHUD();
+
+      // Colocar torres (NO se ejecuta si el puntero está sobre un objeto interactivo)
       this.input.on('pointerdown', (p: any) => {
-        // no colocar si haces click encima de una torre existente
-        const overTower = this.towers.some(t =>
-          PhaserLib.Math.Distance.Between(p.worldX, p.worldY, t.sprite.x, t.sprite.y) < this.map.tileSize * 0.5
-        );
-        if (overTower) return;
+        // si hay un objeto interactivo debajo, no colocamos
+        const hits = (this.input.manager as any).hitTest(p, this.children.list, this.cameras.main);
+        if (hits && hits.length) return;
 
         const model = GROUPS[this.selFam][this.selIdx];
         const { tx, ty } = this.worldToTile(p.worldX, p.worldY);
         if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
-        if (this.blockedTiles.has(this.tileKey(tx, ty))) return;
+        const k = this.tileKey(tx, ty);
+        if (this.blockedTiles.has(k) || this.towerTiles.has(k)) return;
         if (this.gold < model.cost) return;
 
         this.gold -= model.cost;
@@ -207,31 +214,35 @@ function createSceneClass() {
         const x = tx * this.map.tileSize + this.map.tileSize / 2;
         const y = ty * this.map.tileSize + this.map.tileSize / 2;
         const spr = this.add.image(x, y, 'towers', model.frame).setDepth(300);
-        this.towers.push({ sprite: spr, model, last: 0 });
+        if (model.tint) spr.setTint(model.tint);
+
+        const tw: PlacedTower = {
+          sprite: spr,
+          base: model,
+          stats: { dmg: model.dmg, range: model.range, cd: model.cd },
+          level: 0, last: 0, spent: model.cost,
+          tx, ty
+        };
+        this.towers.push(tw);
+        this.towerTiles.add(k);
 
         spr.setInteractive({ cursor: 'pointer' });
-        spr.on('pointerover', () => {
-          this.rangeCircle.setVisible(true).setPosition(spr.x, spr.y).setRadius(model.range);
-          const dps = (model.dmg * 1000 / model.cd).toFixed(1);
-          this.tooltip.setVisible(true).setPosition(spr.x + 18, spr.y - 18)
-            .setText(`T: ${model.frame} | lvl 0\nDPS ${dps} · Range ${model.range} · CD ${model.cd}ms`);
-        });
-        spr.on('pointerout', () => {
-          this.rangeCircle.setVisible(false);
-          this.tooltip.setVisible(false);
-        });
+        spr.on('pointerover', () => this.showTowerInfo(tw));
+        spr.on('pointerout',  () => this.hideTowerInfo());
+        // abrir menú en pointerUP para no competir con el click de colocar
+        spr.on('pointerup',   () => this.openMenu(tw));
       });
 
       // Teclado
       this.input.keyboard?.on('keydown', (e: KeyboardEvent) => {
-        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; }
-        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; }
-        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; }
-        if (e.key === 'ArrowLeft')  this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length;
-        if (e.key === 'ArrowRight') this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length;
+        if (e.key === '1') { this.selFam = 'electric'; this.selIdx = 0; this.refreshHUD(); }
+        if (e.key === '2') { this.selFam = 'fire';     this.selIdx = 0; this.refreshHUD(); }
+        if (e.key === '3') { this.selFam = 'frost';    this.selIdx = 0; this.refreshHUD(); }
+        if (e.key === '4') { this.selFam = 'nature';   this.selIdx = 0; this.refreshHUD(); }
+        if (e.key === 'ArrowLeft')  { this.selIdx = (this.selIdx + GROUPS[this.selFam].length - 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
+        if (e.key === 'ArrowRight') { this.selIdx = (this.selIdx + 1) % GROUPS[this.selFam].length; this.refreshHUD(); }
         if (e.code === 'Space') this.scene.isPaused() ? this.scene.resume() : this.scene.pause();
         if (e.key.toLowerCase() === 'f') this.time.timeScale = this.time.timeScale === 1 ? 2 : 1;
-        if (e.key === 'Enter') this.nextWaveNow(); // opcional: lanzar oleada ya
       });
 
       // Waves
@@ -240,27 +251,178 @@ function createSceneClass() {
       this.ready = true;
     }
 
+    /* ----------------- HUD ----------------- */
+    buildHUD() {
+      const w = this.scale.width;
+      this.hudContainer = this.add.container(0,0).setDepth(900);
+      const bg = this.add.rectangle(0,0, w, this.hudHeight, 0x0b1220, 0.92).setOrigin(0,0);
+      bg.setStrokeStyle(1, 0x162033, 1);
+      this.hudContainer.add(bg);
+
+      const fams: { k: FamKey; label: string }[] = [
+        { k:'electric', label:'⚡' }, { k:'fire', label:'🔥' }, { k:'frost', label:'❄' }, { k:'nature', label:'🌿' }
+      ];
+      fams.forEach((f, i) => {
+        const t = this.add.text(12 + i*26, 10, f.label, { fontFamily:'monospace', fontSize:'18px', color: this.selFam===f.k ? '#fff' : '#9ab' })
+          .setInteractive({useHandCursor:true})
+          .on('pointerdown', ()=> { this.selFam = f.k; this.selIdx = 0; this.refreshHUD(); });
+        this.hudContainer.add(t);
+      });
+
+      // iconos de torres del grupo activo
+      const iconsX0 = 12; const iconsY = 42;
+      for (let i=0; i<6; i++) {
+        const img = this.add.image(iconsX0 + i*64, iconsY, 'towers', GROUPS[this.selFam][0].frame)
+          .setOrigin(0,0.5).setScale(0.8).setInteractive({useHandCursor:true});
+        img.on('pointerdown', ()=> { if (i<GROUPS[this.selFam].length){ this.selIdx = i; this.refreshHUD(); }});
+        (img as any).__slot = i;
+        this.hudContainer.add(img);
+      }
+
+      this.selHighlight = this.add.rectangle(iconsX0 - 4, iconsY, 56, 56, 0xFFFFFF, 0.06)
+        .setStrokeStyle(1, 0x4cc2ff, 1).setOrigin(0,0.5);
+      this.hudContainer.add(this.selHighlight);
+
+      this.refreshHUD();
+    }
+
+    refreshHUD() {
+      const imgs = this.hudContainer.list.filter((o:any)=>o.texture && o.texture.key==='towers');
+      imgs.forEach((img:any)=> {
+        const slot = img.__slot as number;
+        const arr = GROUPS[this.selFam];
+        if (slot < arr.length) {
+          const m = arr[slot];
+          img.setFrame(m.frame).setVisible(true);
+          if (m.tint) img.setTint(m.tint); else img.clearTint();
+        } else {
+          img.setVisible(false);
+        }
+      });
+      const current = imgs.find((img:any)=> (img.__slot as number)===this.selIdx && img.visible);
+      if (current) this.selHighlight.setPosition(current.x - 4, current.y).setVisible(true);
+      else this.selHighlight.setVisible(false);
+
+      // recolor labels
+      this.hudContainer.list.forEach((o:any)=>{
+        if (o.type==='Text') {
+          if (o.text==='⚡') o.setColor(this.selFam==='electric' ? '#fff' : '#9ab');
+          if (o.text==='🔥') o.setColor(this.selFam==='fire'     ? '#fff' : '#9ab');
+          if (o.text==='❄') o.setColor(this.selFam==='frost'    ? '#fff' : '#9ab');
+          if (o.text==='🌿') o.setColor(this.selFam==='nature'   ? '#fff' : '#9ab');
+        }
+      });
+    }
+
+    /* ------------- Tooltip torre ------------- */
+    showTowerInfo(t: PlacedTower) {
+      this.rangeCircle.setVisible(true).setPosition(t.sprite.x, t.sprite.y).setRadius(t.stats.range);
+      const dps = (t.stats.dmg * 1000 / t.stats.cd).toFixed(1);
+      this.tooltip.setVisible(true).setPosition(t.sprite.x + 18, t.sprite.y - 18)
+        .setText(`T: ${t.base.frame}  |  lvl ${t.level}\nDPS ${dps} · Range ${t.stats.range} · CD ${t.stats.cd}ms`);
+    }
+    hideTowerInfo() {
+      this.rangeCircle.setVisible(false);
+      this.tooltip.setVisible(false);
+    }
+
+    /* ------------- Menú Upgrade/Vender ------------- */
+    openMenu(t: PlacedTower) {
+      this.closeMenu(); // por si hubiera otro
+      this.menuOpen = true;
+      this.menuFor = t;
+
+      const cont = this.add.container(t.sprite.x + 8, t.sprite.y - 8).setDepth(1100);
+      const bg = this.add.rectangle(0,0, 200, 90, 0x0f1728, 0.95).setOrigin(0,1).setStrokeStyle(1,0x4cc2ff,0.8);
+      cont.add(bg);
+
+      const dps = (t.stats.dmg * 1000 / t.stats.cd).toFixed(1);
+      const title = this.add.text(6,-78, `${t.base.frame}  (lvl ${t.level})`, {fontFamily:'monospace', fontSize:'12px', color:'#e8f4ff'});
+      const stats = this.add.text(6,-60, `DPS ${dps}  Rng ${t.stats.range}  CD ${t.stats.cd}`, {fontFamily:'monospace', fontSize:'11px', color:'#b7c7ff'});
+      cont.add(title); cont.add(stats);
+
+      const upCost = this.upgradeCost(t);
+      const sellVal = Math.round(t.spent*0.6);
+
+      this.makeBtn(cont, 6,-36, `Upgrade (+25% dmg, +rng, -cd)  🪙 ${upCost}`, () => {
+        if (this.gold < upCost) return;
+        this.gold -= upCost; this.goldText.setText(`🪙 ${this.gold}`);
+        t.level++; t.spent += upCost;
+        t.stats.dmg = Math.round(t.stats.dmg * 1.25);
+        t.stats.range += 12;
+        t.stats.cd = Math.max(220, Math.round(t.stats.cd * 0.9));
+        this.openMenu(t); // refrescar
+      });
+
+      this.makeBtn(cont, 6,-14, `Vender  (+🪙 ${sellVal})`, () => {
+        this.gold += sellVal; this.goldText.setText(`🪙 ${this.gold}`);
+        const k = this.tileKey(t.tx, t.ty);
+        this.towerTiles.delete(k);
+        t.sprite.destroy();
+        this.towers = this.towers.filter(x => x !== t);
+        this.closeMenu();
+      });
+
+      this.menuContainer = cont;
+
+      // Cerrar al click fuera (en el *siguiente* tick, para no cerrarlo al abrir)
+      this.time.delayedCall(0, () => {
+        this.input.once('pointerdown', (p:any) => {
+          if (!this.menuContainer) return;
+          const r = new Phaser.Geom.Rectangle(this.menuContainer.x-2, this.menuContainer.y-90, 204, 94);
+          if (!Phaser.Geom.Rectangle.Contains(r, p.worldX, p.worldY)) this.closeMenu();
+        });
+      });
+    }
+
+    closeMenu() {
+      this.menuOpen = false;
+      this.menuFor = null;
+      this.menuContainer?.destroy();
+      this.menuContainer = undefined;
+    }
+
+    makeBtn(parent:any, x:number, y:number, label:string, onClick:()=>void) {
+      const btn = this.add.container(x,y);
+      const r = this.add.rectangle(0,0, 188, 18, 0x173055, 0.9).setOrigin(0,0.5).setStrokeStyle(1,0x4cc2ff,0.6);
+      const t = this.add.text(6,0,label,{fontFamily:'monospace', fontSize:'11px', color:'#d8e7ff'}).setOrigin(0,0.5);
+      btn.add([r,t]);
+      btn.setSize(188,18).setInteractive({useHandCursor:true});
+      btn.on('pointerdown', onClick);
+      parent.add(btn);
+      return btn;
+    }
+
+    upgradeCost(t: PlacedTower) {
+      return Math.round(t.base.cost * Math.pow(1.5, t.level + 1));
+    }
+
+    /* ------------- Pintar mapa ------------- */
     drawMapFromJSON(map: MapDef) {
       const mark = (x: number, y: number) => this.blockedTiles.add(this.tileKey(x, y));
-
-      for (const lane of map.paths) {
+      for (let li=0; li<map.paths.length; li++) {
+        const lane = map.paths[li];
         for (const p of lane) {
           if (p.x >= 0 && p.x < map.width && p.y >= 0 && p.y < map.height) {
             const cx = p.x * map.tileSize + map.tileSize / 2;
             const cy = p.y * map.tileSize + map.tileSize / 2;
-            this.add.image(cx, cy, 'terrain64', map.terrain).setDepth(50);
+            const key = `${p.x},${p.y}`;
+            const frame =
+              (map.pathFrames && map.pathFrames[key]) ||
+              (map.pathSkins && map.pathSkins[li]) ||
+              map.terrain;
+            this.add.image(cx, cy, 'terrain64', frame).setDepth(50);
             mark(p.x, p.y);
           }
         }
       }
-
       for (const r of map.buildMask) {
         for (let x = r.x; x < r.x + r.w; x++)
           for (let y = r.y; y < r.y + r.h; y++) mark(x, y);
       }
     }
 
-    /** Elige un frame de enemigo que exista; evita "__MISSING" */
+    /* ------------- Enemigos/Waves ------------- */
     pickEnemyVisual() {
       const candidates: { key: string; frame: string }[] = [
         { key: 'enemies48', frame: 'Demon Lord' },
@@ -278,11 +440,6 @@ function createSceneClass() {
       return { key: 'enemies32', frame: 'Goblin Scout' };
     }
 
-    nextWaveNow() {
-      // Si quieres botón/tecla para forzar siguiente oleada, puedes llamar a esta función
-      // Aquí podrías gestionar una cola/cancelación de delayedCalls si fuese necesario
-    }
-
     setupWavesFromJSON(map: MapDef) {
       this.waveIndex = 0;
       const next = () => {
@@ -292,7 +449,7 @@ function createSceneClass() {
         const hp    = W.baseHP    + this.waveIndex * W.hpPerWave;
         const speed = W.baseSpeed + this.waveIndex * W.speedPerWave;
 
-        const pathIdx = (this.laneToggle++ % 2 === 0) ? 0 : 1;
+        const pathIdx = (this.laneToggle++ % Math.max(1, map.paths.length)) || 0;
         const pathTiles = map.paths[pathIdx];
         const pathWorld = pathTiles.map(pt => ({
           x: pt.x * map.tileSize + map.tileSize / 2,
@@ -303,14 +460,13 @@ function createSceneClass() {
           this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(pathWorld, hp, speed));
         }
 
-        // Oleada secundaria
-        if (this.waveIndex % 3 === 0) {
-          const other = map.paths[pathIdx ? 0 : 1].map(pt => ({
+        if (this.waveIndex % 3 === 0 && map.paths.length > 1) {
+          const otherPath = map.paths[pathIdx ? 0 : 1].map(pt => ({
             x: pt.x * map.tileSize + map.tileSize / 2,
             y: pt.y * map.tileSize + map.tileSize / 2,
           }));
           for (let i = 0; i < Math.floor(count * 0.7); i++) {
-            this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(other, Math.floor(hp * 0.9), speed));
+            this.time.delayedCall(i * W.spawnDelayMs, () => this.spawnEnemy(otherPath, Math.floor(hp * 0.9), speed));
           }
         }
 
@@ -346,8 +502,9 @@ function createSceneClass() {
       };
     }
 
-    fireAt(t: { sprite: any; model: TowerModel }, target: any) {
-      const m = t.model;
+    /* ------------- Disparo / daño ------------- */
+    fireAt(t: PlacedTower, target: any) {
+      const m = t.base;
       const p = this.add.image(t.sprite.x, t.sprite.y, 'projectiles', m.projectile).setDepth(200);
       this.projectiles.add(p);
       (p as any).vx = (target.x - p.x);
@@ -356,18 +513,12 @@ function createSceneClass() {
       const speed = 520;
       (p as any).vx = (p as any).vx / len * speed * (1 / 60);
       (p as any).vy = (p as any).vy / len * speed * (1 / 60);
-      (p as any).dmg = m.dmg;
+      (p as any).dmg = t.stats.dmg;
       (p as any).fam = m.fam;
       (p as any).slow = m.slow;
       (p as any).dot  = m.dot;
       (p as any).chain= m.chain;
       (p as any).ttl = 900;
-
-      // Trail por familia
-      if (m.fam === 'electric') this.trail(p, 'projectiles', 'Lightning Bolt', { frequency: 30 });
-      if (m.fam === 'fire')     this.trail(p, 'projectiles', 'Fireball',       { frequency: 35 });
-      if (m.fam === 'frost')    this.trail(p, 'projectiles', 'Ice Shard',      { frequency: 35 });
-
       try { this.sound.play('shoot', { volume: 0.25 }); } catch {}
     }
 
@@ -397,7 +548,6 @@ function createSceneClass() {
 
           (best as any).hp -= Math.max(1, Math.round(dmg));
           visited.add(best);
-
           queue.push({ node: best, dmg: dmg * falloff, depth: depth + 1 });
         }
       }
@@ -410,7 +560,6 @@ function createSceneClass() {
 
       e.hp -= baseDmg;
 
-      // Efectos de estado
       if (fam === 'frost' && proj.slow) {
         const slowFactor: number = proj.slow.factor;
         const slowMs: number = proj.slow.ms;
@@ -418,7 +567,7 @@ function createSceneClass() {
         e.speed = old * slowFactor;
         this.time.delayedCall(slowMs, () => e && (e.speed = old));
       }
-      if (fam === 'fire' && proj.dot) {
+      if ((fam === 'fire' || fam === 'nature') && proj.dot) {
         const dotDps: number = proj.dot.dps;
         const dotMs: number = proj.dot.ms;
         const ticks = Math.floor(dotMs / 300);
@@ -432,40 +581,32 @@ function createSceneClass() {
         this.chainLightning(enemy, baseDmg, hops, falloff);
       }
 
-      // VFX de impacto por familia
-      if (fam === 'electric') this.burst(e.x, e.y, 'fx', 'Electric Discharge', { lifespan: 200, speed: { min: 120, max: 220 } }, 18);
-      if (fam === 'fire')     this.burst(e.x, e.y, 'fx', 'Fire Explosion',     { lifespan: 240 }, 16);
-      if (fam === 'frost')    this.burst(e.x, e.y, 'fx', 'Ice Explosion',      { lifespan: 240 }, 16);
-
       if (e.hp <= 0) {
         const puff = this.add.image(e.x, e.y, 'fx', 'Poison Cloud').setDepth(210);
         this.time.delayedCall(220, () => puff.destroy());
-
         e.hpbar?.destroy();
         e.destroy();
         this.gold += 6 + Math.floor(this.waveIndex * 0.6);
         this.goldText.setText(`🪙 ${this.gold}`);
         try { this.sound.play('coin', { volume: 0.25 }); } catch {}
       }
-
       proj.destroy();
-      try { this.sound.play('hit', { volume: 0.25 }); } catch {}
     }
 
+    /* ------------- Loop ------------- */
     update(time: number, dt: number) {
       if (!this.ready || !this.enemies || !this.projectiles) return;
 
       this.enemies.getChildren().forEach((e: any) => e?.updateTick?.());
 
       for (const t of this.towers) {
-        if (time < t.last + t.model.cd) continue;
-
+        if (time < t.last + t.stats.cd) continue;
         let best: any = null;
         let bestD = 1e9;
         this.enemies.getChildren().forEach((c: any) => {
           if (!c || !c.active) return;
           const d = PhaserLib.Math.Distance.Between(t.sprite.x, t.sprite.y, c.x, c.y);
-          if (d < t.model.range && d < bestD) { best = c; bestD = d; }
+          if (d < t.stats.range && d < bestD) { best = c; bestD = d; }
         });
         if (best) {
           t.last = time;
@@ -485,6 +626,11 @@ function createSceneClass() {
         });
         if (hit) this.doHit(p, hit);
       });
+
+      // Seguir torre con el menú
+      if (this.menuOpen && this.menuContainer && this.menuFor) {
+        this.menuContainer.setPosition(this.menuFor.sprite.x + 8, this.menuFor.sprite.y - 8);
+      }
     }
   };
 }
@@ -526,9 +672,8 @@ export default function BattleClient() {
         Fluent Tower Defense — MVP++
       </h3>
       <div style={{ color: '#a9b7ff', fontFamily: 'monospace', fontSize: 12, marginBottom: 6 }}>
-        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ · <b>←/→</b> cambia skin ·
-        <b> Espacio</b> pausa · <b>F</b> x2 · <b>ENTER</b> inicia oleada ·
-        Click torre para <b>Upgrade/Vender</b>
+        Click coloca · <b>1</b>=⚡ / <b>2</b>=🔥 / <b>3</b>=❄ / <b>4</b>=🌿 · <b>←/→</b> cambia skin ·
+        <b> Espacio</b> pausa · <b>F</b> x2 · Click torre para <b>Upgrade/Vender</b>
       </div>
       <div ref={rootRef} style={{ width: '100%', height: 'calc(100vh - 120px)' }} />
       {!mounted && <div style={{ color: '#99a', fontFamily: 'monospace', marginTop: 8 }}>Cargando…</div>}
