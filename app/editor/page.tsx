@@ -1,246 +1,445 @@
-'use client';
+"use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
 
-type MapPoint = { x:number; y:number };
-type MapRect  = { x:number; y:number; w:number; h:number };
-type MapDef = {
-  name:string;
-  tileSize:number; width:number; height:number;
-  terrain:string;
-  buildMask: MapRect[];
-  paths: MapPoint[][];
-  waves: {
-    baseCount:number; countPerWave:number;
-    baseHP:number; hpPerWave:number;
-    baseSpeed:number; speedPerWave:number;
-    spawnDelayMs:number; rewardBase:number;
-  }
+// --- Types (compatible with current maps, leaning toward the `cliffs_long.json` schema) ---
+export type GridPoint = { x: number; y: number };
+export type MapSchema = {
+  name: string;
+  tileSize: number; // pixels per tile
+  width: number; // tiles
+  height: number; // tiles
+  terrain?: string; // optional label/biome
+  background?: string; // optional data URL of the background image (PNG)
+  buildMask: GridPoint[]; // cells where building is forbidden
+  paths: GridPoint[][]; // array of polylines (each an array of points in tile coords)
+  waves?: unknown; // keep door open for game-side
 };
 
-const DEFAULT: MapDef = {
-  name:"custom",
-  tileSize: 64, width: 14, height: 10,
-  terrain: "Grass Path", // usa el frame exacto del atlas de terreno
-  buildMask: [],
-  paths: [[],[]],
-  waves: {
-    baseCount: 5, countPerWave: 2,
-    baseHP: 40, hpPerWave: 14,
-    baseSpeed: 60, speedPerWave: 4,
-    spawnDelayMs: 420, rewardBase: 6
+// --- Helpers ---
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function downloadBlob(filename: string, data: Blob) {
+  const url = URL.createObjectURL(data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function cellKey(p: GridPoint) {
+  return `${p.x},${p.y}`;
+}
+
+function snapToGrid(px: number, py: number, tile: number): [number, number] {
+  return [Math.floor(px / tile), Math.floor(py / tile)];
+}
+
+// Brush tools
+type Tool = "path" | "block" | "erase" | "hand";
+
+// Presets to keep dimensions uniform in the project
+const PRESETS = [
+  { label: "16×9 (tile 64)", width: 16, height: 9, tileSize: 64 },
+  { label: "14×10 (tile 64)", width: 14, height: 10, tileSize: 64 },
+  { label: "18×9 (tile 64)", width: 18, height: 9, tileSize: 64 },
+  { label: "20×11 (tile 48)", width: 20, height: 11, tileSize: 48 },
+];
+
+export default function MapEditor() {
+  // --- State ---
+  const [name, setName] = useState("new_map");
+  const [width, setWidth] = useState(16);
+  const [height, setHeight] = useState(9);
+  const [tileSize, setTileSize] = useState(64);
+  const [terrain, setTerrain] = useState("Grass");
+
+  const [tool, setTool] = useState<Tool>("path");
+  const [activePathIndex, setActivePathIndex] = useState(0);
+  const [paths, setPaths] = useState<GridPoint[][]>([[]]);
+  const [buildMask, setBuildMask] = useState<Set<string>>(new Set());
+
+  const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panning = useRef(false);
+  const lastPan = useRef({ x: 0, y: 0 });
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const pixelW = width * tileSize;
+  const pixelH = height * tileSize;
+
+  // --- Import JSON handler ---
+  function importJSON(text: string) {
+    try {
+      const data = JSON.parse(text) as Partial<MapSchema>;
+      if (!data.width || !data.height || !data.tileSize) throw new Error("Mapa inválido: faltan dimensiones");
+      setName((data as any).name ?? "imported_map");
+      setWidth(data.width);
+      setHeight(data.height);
+      setTileSize(data.tileSize);
+      setTerrain(data.terrain ?? "");
+      setPaths((data.paths ?? [[]]).map(pl => pl.map(p => ({ x: p.x|0, y: p.y|0 }))));
+      setBuildMask(new Set((data.buildMask ?? []).map(cellKey)));
+
+      if ((data as any).background) {
+        const img = new Image();
+        img.onload = () => setBgImage(img);
+        img.src = (data as any).background as string;
+      }
+    } catch (e) {
+      alert("No se pudo importar JSON: " + (e as Error).message);
+    }
   }
-};
 
-export default function EditorPage(){
-  const [map,setMap] = useState<MapDef>(structuredClone(DEFAULT));
-  const [mode,setMode] = useState<'laneA'|'laneB'|'block'>('laneA');
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // --- Export JSON handler ---
+  function handleExportJSON() {
+    const schema: MapSchema = {
+      name,
+      tileSize,
+      width,
+      height,
+      terrain,
+      background: bgImage ? drawBackgroundToDataURL() : undefined,
+      buildMask: Array.from(buildMask).map(s => {
+        const [x, y] = s.split(",").map(Number);
+        return { x, y };
+      }),
+      paths: paths.map(pl => pl.map(p => ({ x: clamp(p.x, 0, width-1), y: clamp(p.y, 0, height-1) }))),
+    };
+    const blob = new Blob([JSON.stringify(schema, null, 2)], { type: "application/json" });
+    downloadBlob(`${name}.json`, blob);
+  }
 
-  const W = map.width, H = map.height, S = map.tileSize;
+  function handleExportPNG() {
+    const c = document.createElement("canvas");
+    c.width = pixelW; c.height = pixelH;
+    const g = c.getContext("2d")!;
+    // Fondo
+    if (bgImage) {
+      g.drawImage(bgImage, 0, 0, pixelW, pixelH);
+    } else {
+      g.fillStyle = "#2b2b2b"; g.fillRect(0, 0, pixelW, pixelH);
+    }
+    // Rejilla ligera
+    drawGrid(g, width, height, tileSize, 0.15);
+    // Ruta principal
+    g.strokeStyle = "#ffde59"; g.lineWidth = Math.max(2, tileSize * 0.08);
+    paths.forEach(pl => {
+      if (pl.length < 2) return;
+      g.beginPath();
+      g.moveTo(pl[0].x * tileSize + tileSize/2, pl[0].y * tileSize + tileSize/2);
+      for (let i=1;i<pl.length;i++) {
+        g.lineTo(pl[i].x * tileSize + tileSize/2, pl[i].y * tileSize + tileSize/2);
+      }
+      g.stroke();
+    });
+    // Celdas bloqueadas
+    g.fillStyle = "rgba(255,62,62,0.35)";
+    buildMask.forEach(s => {
+      const [x,y] = s.split(",").map(Number);
+      g.fillRect(x*tileSize, y*tileSize, tileSize, tileSize);
+    });
 
-  useEffect(()=>{
-    const cvs = canvasRef.current!;
-    const ctx = cvs.getContext('2d')!;
-    cvs.width = W*S; cvs.height = H*S;
+    c.toBlob(b => b && downloadBlob(`${name}.png`, b!), "image/png");
+  }
 
-    ctx.fillStyle = "#0c0e12"; ctx.fillRect(0,0,cvs.width,cvs.height);
+  function drawBackgroundToDataURL(): string {
+    const c = document.createElement("canvas");
+    c.width = pixelW; c.height = pixelH;
+    const g = c.getContext("2d")!;
+    if (bgImage) g.drawImage(bgImage, 0, 0, pixelW, pixelH);
+    return c.toDataURL("image/png");
+  }
+
+  // --- Canvas drawing ---
+  useEffect(() => {
+    const canvas = canvasRef.current; if (!canvas) return;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+
+    const W = pixelW * zoom, H = pixelH * zoom;
+    canvas.width = W; canvas.height = H;
+    ctx.save();
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+
+    // background
+    if (bgImage) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(bgImage, 0, 0, pixelW, pixelH);
+    } else {
+      ctx.fillStyle = "#1b1f2a"; ctx.fillRect(0, 0, pixelW, pixelH);
+    }
 
     // grid
-    for(let x=0;x<=W;x++){
-      ctx.strokeStyle = "rgba(120,140,200,.12)";
-      ctx.beginPath(); ctx.moveTo(x*S,0); ctx.lineTo(x*S,H*S); ctx.stroke();
-    }
-    for(let y=0;y<=H;y++){
-      ctx.strokeStyle = "rgba(120,140,200,.12)";
-      ctx.beginPath(); ctx.moveTo(0,y*S); ctx.lineTo(W*S,y*S); ctx.stroke();
-    }
+    drawGrid(ctx, width, height, tileSize, 0.25);
 
-    // blocked
-    ctx.fillStyle = "rgba(240,78,60,0.28)";
-    for(const r of map.buildMask){
-      for(let x=r.x;x<r.x+r.w;x++)
-        for(let y=r.y;y<r.y+r.h;y++){
-          ctx.fillRect(x*S+1, y*S+1, S-2, S-2);
-        }
-    }
+    // build mask
+    ctx.fillStyle = "rgba(255,62,62,0.35)";
+    buildMask.forEach(s => {
+      const [x, y] = s.split(",").map(Number);
+      ctx.fillRect(x*tileSize, y*tileSize, tileSize, tileSize);
+    });
 
     // paths
-    const drawPath = (pts:MapPoint[], col:string) => {
-      if(!pts.length) return;
-      // tiles
-      ctx.fillStyle = col;
-      pts.forEach(p=>{
-        ctx.fillRect(p.x*S+6, p.y*S+6, S-12, S-12);
-      });
-      // líneas
-      ctx.strokeStyle = col; ctx.lineWidth = 3;
+    ctx.strokeStyle = "#ffd166";
+    ctx.lineWidth = Math.max(2, tileSize * 0.08);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    paths.forEach((pl, idx) => {
+      if (pl.length < 2) return;
+      ctx.globalAlpha = idx === activePathIndex ? 1 : 0.55;
       ctx.beginPath();
-      ctx.moveTo(pts[0].x*S + S/2, pts[0].y*S + S/2);
-      for(let i=1;i<pts.length;i++){
-        ctx.lineTo(pts[i].x*S + S/2, pts[i].y*S + S/2);
-      }
+      ctx.moveTo(pl[0].x*tileSize + tileSize/2, pl[0].y*tileSize + tileSize/2);
+      for (let i=1;i<pl.length;i++) ctx.lineTo(pl[i].x*tileSize + tileSize/2, pl[i].y*tileSize + tileSize/2);
       ctx.stroke();
-    };
-
-    drawPath(map.paths[0], "rgba(255,182,66,0.9)"); // A
-    drawPath(map.paths[1], "rgba(106,187,255,0.9)"); // B
-  }, [map]);
-
-  function toggleBlock(tx:number, ty:number){
-    const key = (r:MapRect)=> `${r.x},${r.y},${r.w},${r.h}`;
-    // usamos blocks 1x1 por simplicidad
-    const block:MapRect = {x:tx,y:ty,w:1,h:1};
-    const k = key(block);
-    const found = map.buildMask.find(r=>key(r)===k);
-    const next = {...map};
-    if(found) next.buildMask = next.buildMask.filter(r=>key(r)!==k);
-    else next.buildMask.push(block);
-    setMap(next);
-  }
-
-  function addToLane(ix:number, tx:number, ty:number){
-    const next = {...map, paths: map.paths.map(a=>[...a])};
-    // evitar duplicar consecutivos iguales
-    const arr = next.paths[ix];
-    const last = arr[arr.length-1];
-    if(!last || last.x!==tx || last.y!==ty) arr.push({x:tx,y:ty});
-    setMap(next);
-  }
-
-  function handleClick(ev:React.MouseEvent<HTMLCanvasElement>){
-    const rect = (ev.target as HTMLCanvasElement).getBoundingClientRect();
-    const x = ev.clientX - rect.left;
-    const y = ev.clientY - rect.top;
-    const tx = Math.floor(x/S), ty = Math.floor(y/S);
-    if (tx<0 || ty<0 || tx>=W || ty>=H) return;
-
-    if (mode==='block') toggleBlock(tx,ty);
-    else if (mode==='laneA') addToLane(0,tx,ty);
-    else addToLane(1,tx,ty);
-  }
-
-  function exportJSON(){
-    const data = JSON.stringify(map, null, 2);
-    const blob = new Blob([data], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${map.name || 'custom'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importJSON(file:File){
-    file.text().then(txt=>{
-      try{
-        const obj = JSON.parse(txt);
-        // validación mínima
-        if (!obj || typeof obj!=='object' || !obj.paths) throw new Error("Formato inválido");
-        setMap(obj);
-      }catch(e){ alert(`No se pudo leer JSON: ${(e as any).message}`); }
+      ctx.globalAlpha = 1;
+      // points
+      pl.forEach((p,i) => {
+        ctx.fillStyle = i===0?"#4ade80":(i===pl.length-1?"#60a5fa":"#ffd166");
+        ctx.beginPath();
+        ctx.arc(p.x*tileSize+tileSize/2, p.y*tileSize+tileSize/2, Math.max(3, tileSize*0.12), 0, Math.PI*2);
+        ctx.fill();
+      });
     });
+
+    ctx.restore();
+  }, [bgImage, width, height, tileSize, paths, buildMask, zoom, pan, activePathIndex, pixelW, pixelH]);
+
+  // --- Pointer interactions ---
+  function canvasToWorld(e: React.PointerEvent<HTMLCanvasElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left - pan.x) / zoom;
+    const y = (e.clientY - rect.top - pan.y) / zoom;
+    return { x, y };
   }
 
+  function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (tool === "hand" || e.button === 1) {
+      panning.current = true;
+      lastPan.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+      return;
+    }
+    const { x, y } = canvasToWorld(e);
+    const [gx, gy] = snapToGrid(x, y, tileSize);
+    if (gx<0||gy<0||gx>=width||gy>=height) return;
+
+    if (tool === "path") {
+      setPaths(prev => {
+        const next = prev.map(pl => [...pl]);
+        next[activePathIndex].push({ x: gx, y: gy });
+        return next;
+      });
+    } else if (tool === "block") {
+      setBuildMask(prev => new Set(prev).add(cellKey({x:gx,y:gy})));
+    } else if (tool === "erase") {
+      const key = cellKey({x:gx,y:gy});
+      setBuildMask(prev => {
+        const n = new Set(prev); n.delete(key); return n;
+      });
+    }
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (panning.current) {
+      setPan({ x: e.clientX - lastPan.current.x, y: e.clientY - lastPan.current.y });
+      return;
+    }
+    if (e.buttons === 1 && (tool === "block" || tool === "erase")) {
+      const { x, y } = canvasToWorld(e);
+      const [gx, gy] = snapToGrid(x, y, tileSize);
+      if (gx<0||gy<0||gx>=width||gy>=height) return;
+      if (tool === "block") setBuildMask(prev => new Set(prev).add(cellKey({x:gx,y:gy})));
+      if (tool === "erase") setBuildMask(prev => { const n = new Set(prev); n.delete(cellKey({x:gx,y:gy})); return n; });
+    }
+  }
+  function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    panning.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+
+  function onWheel(e: React.WheelEvent<HTMLCanvasElement>) {
+    if (e.ctrlKey) {
+      const before = zoom;
+      const next = clamp(zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.5, 3);
+      setZoom(next);
+      // keep cursor in place
+      const rect = e.currentTarget.getBoundingClientRect();
+      const cx = e.clientX - rect.left; const cy = e.clientY - rect.top;
+      setPan(p => ({ x: cx - (cx - p.x) * (next / before), y: cy - (cy - p.y) * (next / before) }));
+      e.preventDefault();
+    }
+  }
+
+  // --- Image upload ---
+  function handleImageFile(file: File) {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      // Fit/crop to exact canvas dimensions keeping uniform maps
+      const c = document.createElement("canvas");
+      c.width = pixelW; c.height = pixelH;
+      const g = c.getContext("2d")!;
+      // cover behavior
+      const ratio = Math.max(pixelW / img.width, pixelH / img.height);
+      const w = Math.floor(img.width * ratio);
+      const h = Math.floor(img.height * ratio);
+      const ox = Math.floor((pixelW - w) / 2);
+      const oy = Math.floor((pixelH - h) / 2);
+      g.imageSmoothingEnabled = false;
+      g.drawImage(img, ox, oy, w, h);
+      const fitted = new Image();
+      fitted.onload = () => setBgImage(fitted);
+      fitted.src = c.toDataURL("image/png");
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }
+
+  // --- UI layout ---
   return (
-    <div style={{padding:16, fontFamily:"Inter, system-ui, sans-serif"}}>
-      <h2 style={{color:"#e8f4ff", marginTop:0}}>Editor de Mapas JSON</h2>
+    <div className="min-h-[100dvh] bg-slate-950 text-slate-50 grid grid-cols-12 gap-4 p-4">
+      {/* Sidebar */}
+      <motion.aside initial={{ x: -12, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="col-span-12 md:col-span-3 lg:col-span-2 space-y-4">
+        <div className="rounded-2xl bg-slate-900/60 p-4 shadow">
+          <h2 className="text-lg font-semibold mb-3">🔧 Ajustes</h2>
+          <label className="block text-sm opacity-80 mb-1">Nombre</label>
+          <input value={name} onChange={e=>setName(e.target.value)} className="w-full bg-slate-800 rounded-xl px-3 py-2 mb-3" />
 
-      <div style={{display:"grid", gridTemplateColumns:"280px 1fr", gap:16}}>
-        <div style={{background:"#0f1320", border:"1px solid #202a3f", borderRadius:12, padding:12}}>
-          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}>
-            <label style={{color:"#9db3ff", fontSize:12}}>Nombre
-              <input value={map.name} onChange={e=>setMap({...map, name:e.target.value})}
-                     style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>TileSize
-              <input type="number" value={map.tileSize} min={16} max={96}
-                     onChange={e=>setMap({...map, tileSize: Number(e.target.value) || 64})}
-                     style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>Width
-              <input type="number" value={map.width} min={6} max={30}
-                     onChange={e=>setMap({...map, width: Number(e.target.value)||map.width})}
-                     style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>Height
-              <input type="number" value={map.height} min={6} max={24}
-                     onChange={e=>setMap({...map, height: Number(e.target.value)||map.height})}
-                     style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{gridColumn:"1 / span 2", color:"#9db3ff", fontSize:12}}>Terrain (frame del atlas)
-              <input value={map.terrain} onChange={e=>setMap({...map, terrain:e.target.value})}
-                     style={{width:"100%", marginTop:4}} placeholder="p.ej. Grass Path" />
-            </label>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-sm opacity-80 mb-1">Ancho (tiles)</label>
+              <input type="number" min={6} max={60} value={width} onChange={e=>setWidth(+e.target.value||width)} className="w-full bg-slate-800 rounded-xl px-3 py-2" />
+            </div>
+            <div>
+              <label className="block text-sm opacity-80 mb-1">Alto (tiles)</label>
+              <input type="number" min={6} max={60} value={height} onChange={e=>setHeight(+e.target.value||height)} className="w-full bg-slate-800 rounded-xl px-3 py-2" />
+            </div>
+          </div>
+          <div className="mt-2">
+            <label className="block text-sm opacity-80 mb-1">Tamaño tile (px)</label>
+            <input type="number" min={16} max={128} step={8} value={tileSize} onChange={e=>setTileSize(+e.target.value||tileSize)} className="w-full bg-slate-800 rounded-xl px-3 py-2" />
           </div>
 
-          <div style={{marginTop:12, color:"#9db3ff", fontSize:12}}>Waves (base / por oleada)</div>
-          <div style={{display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:8, marginTop:6}}>
-            <label style={{color:"#9db3ff", fontSize:12}}>baseCount
-              <input type="number" value={map.waves.baseCount}
-                onChange={e=>setMap({...map, waves:{...map.waves, baseCount:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>countPerWave
-              <input type="number" value={map.waves.countPerWave}
-                onChange={e=>setMap({...map, waves:{...map.waves, countPerWave:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>baseHP
-              <input type="number" value={map.waves.baseHP}
-                onChange={e=>setMap({...map, waves:{...map.waves, baseHP:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>hpPerWave
-              <input type="number" value={map.waves.hpPerWave}
-                onChange={e=>setMap({...map, waves:{...map.waves, hpPerWave:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>baseSpeed
-              <input type="number" value={map.waves.baseSpeed}
-                onChange={e=>setMap({...map, waves:{...map.waves, baseSpeed:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>speedPerWave
-              <input type="number" value={map.waves.speedPerWave}
-                onChange={e=>setMap({...map, waves:{...map.waves, speedPerWave:Number(e.target.value)||0}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>spawnDelayMs
-              <input type="number" value={map.waves.spawnDelayMs}
-                onChange={e=>setMap({...map, waves:{...map.waves, spawnDelayMs:Number(e.target.value)||400}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
-            <label style={{color:"#9db3ff", fontSize:12}}>rewardBase
-              <input type="number" value={map.waves.rewardBase}
-                onChange={e=>setMap({...map, waves:{...map.waves, rewardBase:Number(e.target.value)||6}})}
-                style={{width:"100%", marginTop:4}} />
-            </label>
+          <div className="mt-3">
+            <label className="block text-sm opacity-80 mb-1">Preset</label>
+            <div className="flex flex-wrap gap-2">
+              {PRESETS.map(p => (
+                <button key={p.label} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm" onClick={()=>{setWidth(p.width); setHeight(p.height); setTileSize(p.tileSize);}}>{p.label}</button>
+              ))}
+            </div>
           </div>
 
-          <div style={{marginTop:12, display:"flex", gap:8}}>
-            <button onClick={()=>setMode('laneA')} style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background: mode==='laneA'?"#1b2542":"#12192b", color:"#cde0ff"}}>Editar Lane A</button>
-            <button onClick={()=>setMode('laneB')} style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background: mode==='laneB'?"#1b2542":"#12192b", color:"#cde0ff"}}>Editar Lane B</button>
-            <button onClick={()=>setMode('block')} style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background: mode==='block'?"#1b2542":"#12192b", color:"#cde0ff"}}>Bloquear tiles</button>
+          <div className="mt-3">
+            <label className="block text-sm opacity-80 mb-1">Terreno/Bioma</label>
+            <input value={terrain} onChange={e=>setTerrain(e.target.value)} className="w-full bg-slate-800 rounded-xl px-3 py-2" />
           </div>
-
-          <div style={{marginTop:12, display:"flex", gap:8}}>
-            <button onClick={exportJSON} style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background:"#17203a", color:"#cde0ff"}}>Export JSON</button>
-            <label style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background:"#17203a", color:"#cde0ff", cursor:"pointer"}}>
-              Import JSON
-              <input type="file" accept="application/json" onChange={e=>e.target.files && importJSON(e.target.files[0])} style={{display:"none"}} />
-            </label>
-            <button onClick={()=>setMap(structuredClone(DEFAULT))} style={{padding:"8px 10px", borderRadius:8, border:"1px solid #2a3658", background:"#281626", color:"#ffd6f0"}}>Reset</button>
-          </div>
-
-          <p style={{color:"#7483a8", fontSize:12, marginTop:10}}>
-            CONSEJO: Coloca los primeros puntos del path en el borde del mapa (entrada).
-          </p>
         </div>
 
-        <div style={{overflow:"auto", border:"1px solid #202a3f", borderRadius:12}}>
-          <canvas ref={canvasRef} onClick={handleClick} style={{display:"block"}} />
+        <div className="rounded-2xl bg-slate-900/60 p-4 shadow space-y-3">
+          <h2 className="text-lg font-semibold">🖼️ Fondo</h2>
+          <input type="file" accept="image/*" onChange={e=>{const f=e.target.files?.[0]; if (f) handleImageFile(f);}} />
+          <p className="text-xs opacity-70">La imagen se ajusta por <em>cover</em> al lienzo para mantener <strong>dimensiones uniformes</strong>.</p>
+          <div className="flex gap-2">
+            <button className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={handleExportPNG}>Export PNG</button>
+            <button className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={()=>setBgImage(null)}>Quitar fondo</button>
+          </div>
         </div>
+
+        <div className="rounded-2xl bg-slate-900/60 p-4 shadow space-y-3">
+          <h2 className="text-lg font-semibold">💾 Importar / Exportar</h2>
+          <div className="flex gap-2">
+            <button className="px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600" onClick={handleExportJSON}>Export JSON</button>
+            <label className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 cursor-pointer">Import JSON
+              <input type="file" accept="application/json" className="hidden" onChange={async e=>{const f=e.target.files?.[0]; if(!f)return; const text=await f.text(); importJSON(text);}} />
+            </label>
+          </div>
+        </div>
+      </motion.aside>
+
+      {/* Main */}
+      <div className="col-span-12 md:col-span-9 lg:col-span-10 grid grid-rows-[auto_1fr_auto] gap-3">
+        {/* Toolbar */}
+        <motion.div initial={{ y: -8, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="rounded-2xl bg-slate-900/60 p-3 shadow flex flex-wrap items-center gap-2">
+          <ToolButton active={tool==="path"} onClick={()=>setTool("path")} label="Ruta" shortcut="1"/>
+          <ToolButton active={tool==="block"} onClick={()=>setTool("block")} label="Bloquear" shortcut="2"/>
+          <ToolButton active={tool==="erase"} onClick={()=>setTool("erase")} label="Borrar" shortcut="3"/>
+          <ToolButton active={tool==="hand"} onClick={()=>setTool("hand")} label="Mover" shortcut="Espacio"/>
+          <div className="ml-auto flex items-center gap-2 text-sm">
+            <span className="opacity-70">Zoom</span>
+            <input type="range" min={50} max={300} value={Math.round(zoom*100)} onChange={e=>setZoom(+e.target.value/100)} />
+            <button className="px-2 py-1 rounded-lg bg-slate-800" onClick={()=>{setZoom(1); setPan({x:0,y:0});}}>Reset</button>
+          </div>
+        </motion.div>
+
+        {/* Canvas wrapper */}
+        <div className="rounded-2xl bg-slate-900/60 p-2 shadow overflow-auto relative">
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full touch-none rounded-xl bg-black/30"
+            style={{ width: pixelW * zoom + "px", height: pixelH * zoom + "px" }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onWheel={onWheel}
+          />
+        </div>
+
+        {/* Paths & info */}
+        <motion.div initial={{ y: 8, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="rounded-2xl bg-slate-900/60 p-3 shadow flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm opacity-80">Rutas:</span>
+            {paths.map((_, i) => (
+              <button key={i} onClick={()=>setActivePathIndex(i)} className={`px-3 py-1 rounded-xl text-sm ${i===activePathIndex?"bg-amber-700":"bg-slate-800 hover:bg-slate-700"}`}>#{i+1}</button>
+            ))}
+            <button className="px-3 py-1 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-sm" onClick={()=>setPaths(p=>[...p, []])}>+ Añadir ruta</button>
+            {paths.length>1 && (
+              <button className="px-3 py-1 rounded-xl bg-rose-700 hover:bg-rose-600 text-sm" onClick={()=>{
+                setPaths(prev => prev.filter((_,i)=>i!==activePathIndex));
+                setActivePathIndex(i=>clamp(i-1,0,Math.max(0,paths.length-2)));
+              }}>Eliminar ruta activa</button>
+            )}
+          </div>
+
+          <div className="ml-auto text-xs opacity-70">
+            <span>Dimensiones: {width}×{height} tiles • {tileSize}px • {pixelW}×{pixelH}px</span>
+          </div>
+        </motion.div>
       </div>
     </div>
   );
+}
+
+function ToolButton({ active, onClick, label, shortcut }:{active:boolean; onClick:()=>void; label:string; shortcut:string}) {
+  return (
+    <button onClick={onClick} className={`px-3 py-2 rounded-xl text-sm shadow-sm ${active?"bg-amber-700":"bg-slate-800 hover:bg-slate-700"}`}>
+      {label} <span className="opacity-70">[{shortcut}]</span>
+    </button>
+  );
+}
+
+function drawGrid(ctx: CanvasRenderingContext2D, width: number, height: number, tileSize: number, alpha=0.25) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= width; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * tileSize + 0.5, 0);
+    ctx.lineTo(x * tileSize + 0.5, height * tileSize);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= height; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * tileSize + 0.5);
+    ctx.lineTo(width * tileSize, y * tileSize + 0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
