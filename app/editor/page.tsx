@@ -24,6 +24,7 @@ const snapToGrid = (px: number, py: number, tile: number): [number, number] => [
   Math.floor(py / tile),
 ];
 
+// Mantén estático para evitar SSR y cachés raras
 export const dynamic = "force-static";
 
 export default function Page() {
@@ -32,7 +33,7 @@ export default function Page() {
   const [paths, setPaths] = useState<P[][]>([[]]); // múltiples carriles
   const [lane, setLane] = useState(0);             // carril activo
 
-  // Fondo (para guiarte visualmente)
+  // Fondo (guía visual)
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
   const [bgFileName, setBgFileName] = useState<string | undefined>(undefined);
 
@@ -47,7 +48,7 @@ export default function Page() {
   const pixelW = WIDTH_TILES * TILE_PX;
   const pixelH = HEIGHT_TILES * TILE_PX;
 
-  // Dibujo del editor
+  // Dibujo
   useEffect(() => {
     const c = canvasRef.current; if (!c) return;
     const g = c.getContext("2d"); if (!g) return;
@@ -89,7 +90,7 @@ export default function Page() {
     });
 
     g.restore();
-  }, [bgImage, paths, lane, zoom, pan]);
+  }, [bgImage, paths, lane, zoom, pan, pixelW, pixelH]);
 
   // Interacciones
   function canvasToWorld(e: React.PointerEvent<HTMLCanvasElement>) {
@@ -165,7 +166,7 @@ export default function Page() {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
-      // Ajuste cover a tamaño fijo
+      // Ajuste cover
       const c = document.createElement("canvas"); c.width = pixelW; c.height = pixelH;
       const g = c.getContext("2d")!;
       const r = Math.max(pixelW / img.width, pixelH / img.height);
@@ -215,7 +216,7 @@ export default function Page() {
         x: clamp(pt.x, 0, WIDTH_TILES-1),
         y: clamp(pt.y, 0, HEIGHT_TILES-1)
       }))),
-      backgroundFile: bgFileName,
+      backgroundFile: bgFileName ?? `${name}.png`,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -272,6 +273,7 @@ export default function Page() {
             <button className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm" onClick={undoLast}>↶ Deshacer punto</button>
             <button className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm" onClick={clearLane}>🧹 Vaciar carril</button>
           </div>
+          <p className="text-xs opacity-70 mt-1">Tip: Shift o botón central para mover el lienzo. Ctrl + rueda = zoom.</p>
         </div>
 
         <div className="rounded-2xl bg-slate-900/60 p-4 shadow space-y-3">
@@ -282,11 +284,7 @@ export default function Page() {
               <input type="file" accept="application/json" className="hidden" onChange={e=>{const f=e.target.files?.[0]; if (f) importJSON(f);}} />
             </label>
           </div>
-          <p className="text-xs opacity-70">La ruta debe <b>empezar y terminar en el borde</b> del mapa.</p>
-        </div>
-
-        <div className="rounded-2xl bg-slate-900/60 p-4 shadow text-xs opacity-80">
-          <p><b>Cómo usar:</b> sube un fondo, selecciona carril, haz click en la rejilla para añadir puntos. Shift o botón central para mover. Ctrl + rueda para zoom.</p>
+          <p className="text-xs opacity-70">Cada carril debe <b>empezar y terminar en el borde</b> del mapa.</p>
         </div>
       </aside>
 
@@ -306,3 +304,4 @@ export default function Page() {
     </div>
   );
 }
+
